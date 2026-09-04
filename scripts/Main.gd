@@ -306,8 +306,11 @@ func _build_log_panel() -> void:
 func _build_end_choice_popup() -> void:
 	end_choice_popup = PanelContainer.new()
 	end_choice_popup.position = Vector2(390, 214)
-	end_choice_popup.size = Vector2(500, 72)
+	# Más alto que antes para que el contenido quepa dentro de los márgenes del
+	# fondo. El margen es menor que en los diálogos grandes: es un aviso chico.
+	end_choice_popup.size = Vector2(500, 100)
 	end_choice_popup.visible = false
+	_apply_dialog_style(end_choice_popup, 14.0)
 	add_child(end_choice_popup)
 
 	var vb := VBoxContainer.new()
@@ -342,6 +345,16 @@ func _build_toast() -> void:
 	toast_panel.size = Vector2(500, 44)
 	toast_panel.visible = false
 	toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Fondo propio y opaco: se dibuja sobre las fichas del tablero, y con el estilo
+	# por defecto se transparentaría y no se leería. El desvanecido usa "modulate",
+	# que afecta también a este fondo, así que sigue funcionando.
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.13, 0.09)
+	sb.border_color = Color(1, 0.85, 0.35)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(8)
+	sb.set_content_margin_all(10)
+	toast_panel.add_theme_stylebox_override("panel", sb)
 	add_child(toast_panel)
 
 	toast_label = Label.new()
@@ -362,6 +375,19 @@ func _show_toast(text: String) -> void:
 	toast_tween.tween_interval(1.1)
 	toast_tween.tween_property(toast_panel, "modulate:a", 0.0, 0.7)
 	toast_tween.tween_callback(func(): toast_panel.visible = false)
+
+
+# El estilo por defecto de PanelContainer no es opaco, así que en un diálogo se
+# transparenta el tablero y las manos de atrás y no se lee nada. Los diálogos llevan
+# fondo propio, opaco.
+func _apply_dialog_style(panel: PanelContainer, margin: float = 22.0) -> void:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.13, 0.09)
+	sb.border_color = Color(0.55, 0.62, 0.55)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(10)
+	sb.set_content_margin_all(margin)
+	panel.add_theme_stylebox_override("panel", sb)
 
 
 func _make_turn_dot() -> Panel:
@@ -411,6 +437,7 @@ func _build_hand_result_overlay() -> void:
 
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = Vector2(560, 0)
+	_apply_dialog_style(panel)
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
@@ -445,6 +472,7 @@ func _build_game_over_overlay() -> void:
 	game_over_overlay.add_child(center)
 
 	var panel := PanelContainer.new()
+	_apply_dialog_style(panel)
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
@@ -477,6 +505,7 @@ func _build_start_overlay() -> void:
 	start_overlay.add_child(center)
 
 	var panel := PanelContainer.new()
+	_apply_dialog_style(panel)
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
@@ -631,9 +660,6 @@ func start_new_hand() -> void:
 func _proceed_turn() -> void:
 	if phase != Phase.PLAYING:
 		return
-	# Se evalúa al volver el turno: si los otros tres pasaron y este jugador sí
-	# puede jugar, la ficha que puso provocó un pase seguido.
-	_check_pase_seguido()
 	_update_top_bar()
 	_render_south_hand()
 	_update_pass_status()
@@ -641,11 +667,12 @@ func _proceed_turn() -> void:
 
 	# Si de verdad no hay ninguna ficha jugable (sea IA o el humano), se pasa solo:
 	# nadie puede quedarse esperando un clic que no llega, y así el tranque (4 pases
-	# seguidos) siempre se detecta y se resuelve.
-	if state.legal_moves_for(state.current_player).is_empty():
+	# seguidos) siempre se detecta y se resuelve. La pausa es solo ritmo visual; la
+	# regla de que un pase sin jugada es obligatorio la valida GameState.
+	if not state.has_legal_move(state.current_player):
 		await get_tree().create_timer(0.9).timeout
 		if phase == Phase.PLAYING:
-			_handle_pass(state.current_player)
+			_submit_pass(state.current_player)
 		return
 
 	if state.current_player != HUMAN_SEAT:
@@ -657,7 +684,7 @@ func _proceed_turn() -> void:
 func _ai_take_turn(seat: int) -> void:
 	var moves := state.legal_moves_for(seat)
 	if moves.is_empty():
-		_handle_pass(seat)
+		_submit_pass(seat)
 		return
 
 	var hand: Array = state.hands[seat]
@@ -673,198 +700,114 @@ func _ai_take_turn(seat: int) -> void:
 	var chosen_end: String = best.ends[0]
 	if best.ends.size() > 1:
 		chosen_end = best.ends[randi() % best.ends.size()]
-	_play_tile(seat, best.idx, chosen_end)
+	_submit_play(seat, best.idx, chosen_end)
 
 
-func _play_tile(seat: int, idx: int, end: String) -> void:
-	var t: Domino = state.hands[seat][idx]
-	var was_opening: bool = state.board.is_empty()
+# ===========================================================================
+# Puente entre las reglas y la interfaz
+# ===========================================================================
+# GameState aplica la jugada y devuelve la lista de lo que pasó; acá se traduce a
+# texto, avisos y pantallas. Cuando el juego sea en red, esos mismos eventos
+# llegarán del servidor en vez de calcularse en local, y esta capa no cambia.
+func _submit_play(seat: int, idx: int, end: String) -> void:
+	_consume(state.apply_play(seat, idx, end))
 
-	# Capicúa: la ficha calzaba en las DOS puntas y tiene las caras distintas (los
-	# dobles no cuentan). Se comprueba antes de colocarla, con las puntas de ahora.
-	state.last_play_was_capicua = (not was_opening) and (not t.is_double()) \
-		and t.has_value(state.left_end) and t.has_value(state.right_end)
 
-	state.hands[seat].remove_at(idx)
+func _submit_pass(seat: int) -> void:
+	_consume(state.apply_pass(seat))
 
-	if was_opening:
-		state.board.push_back(t)
-		state.left_end = t.a
-		state.right_end = t.b
-		state.opening_tile_index = 0
-	elif end == "L":
-		var other_v := t.other(state.left_end)
-		state.board.push_front(t)
-		state.left_end = other_v
-		state.opening_tile_index += 1
-	else:
-		var other_v := t.other(state.right_end)
-		state.board.push_back(t)
-		state.right_end = other_v
 
-	state.must_open_with_double_six = false
-	state.consecutive_passes = 0
-	state.last_player_to_play = seat
-	_log("%s jugó [b]%s[/b]." % [SEAT_NAMES[seat], str(t)])
+func _consume(events: Array) -> void:
+	var closing: Dictionary = {}
+	for e in events:
+		_handle_event(e)
+		var kind: String = str(e.get("type", ""))
+		if kind == "hand_won" or kind == "tranque":
+			closing = e
 
-	if was_opening:
-		# Empieza la ventana del pase de salida: hay que ver qué hace el siguiente.
-		state.opening_pass_stage = 0
-	else:
-		_resolve_opening_pass(seat, false)
+	# La fase se marca antes de redibujar: así la mano del jugador no se dibuja como
+	# interactiva en el mismo cuadro en que la mano ya terminó.
+	if not closing.is_empty():
+		phase = Phase.HAND_OVER
 
 	_render_all()
-	_check_hand_end(seat)
+
+	if not closing.is_empty():
+		_show_hand_result_for(closing)
+	elif not state.hand_over:
+		_proceed_turn()
 
 
-func _handle_pass(seat: int) -> void:
-	state.consecutive_passes += 1
-	_log("%s pasa (no tiene fichas con %d ni %d)." % [SEAT_NAMES[seat], state.left_end, state.right_end])
-	_show_toast("%s pasó" % SEAT_NAMES[seat])
-	_resolve_opening_pass(seat, true)
-	if state.consecutive_passes >= 4:
-		_resolve_tranque()
-	else:
-		_advance_turn()
+func _handle_event(e: Dictionary) -> void:
+	match str(e.get("type", "")):
+		"played":
+			_log("%s jugó [b]%s[/b]." % [SEAT_NAMES[e.seat], str(e.tile)])
+		"passed":
+			_log("%s pasa (no tiene fichas con %d ni %d)." % [SEAT_NAMES[e.seat], e.left_end, e.right_end])
+			_show_toast("%s pasó" % SEAT_NAMES[e.seat])
+		"bonus":
+			var text: String = _bonus_text(e)
+			_log("[b]+%d[/b] al equipo %s — %s." % [e.pts, TEAM_NAMES[e.team], text])
+			_show_toast("+%d  %s" % [e.pts, text])
+		"opening_pass_cancelled":
+			_log("Pase de salida anulado: %s (pareja de %s) tampoco pudo jugar." % [SEAT_NAMES[e.partner_seat], SEAT_NAMES[e.lead_seat]])
+		"hand_won":
+			_log("[b]%s[/b] colocó su última ficha. ¡Equipo %s gana la mano! (+%d puntos)" % [SEAT_NAMES[e.winner_seat], TEAM_NAMES[e.winner_team], e.pts])
+		"tranque":
+			_log("¡Tranque! %s (%d) contra %s (%d): gana el equipo %s. (+%d puntos)" % [SEAT_NAMES[e.closer], e.closer_pips, SEAT_NAMES[e.challenger], e.challenger_pips, TEAM_NAMES[e.winner_team], e.pts])
+		"rejected":
+			# No debería pasar jugando en local; en red será la respuesta normal a un
+			# cliente que mande algo inválido.
+			push_warning("Jugada rechazada de %s: %s" % [SEAT_NAMES[e.seat], e.reason])
 
 
-# Pase de salida: si el jugador que sigue al que salió no puede jugar, la pareja del
-# que salió gana la bonificación... salvo que su propio compañero tampoco pueda
-# jugar en su primer turno, caso en el que se anula.
-func _resolve_opening_pass(seat: int, passed: bool) -> void:
-	if state.opening_pass_stage < 0:
-		return
-	var next_seat: int = (state.lead_player + 1) % 4
-	var partner_seat: int = (state.lead_player + 2) % 4
-
-	if state.opening_pass_stage == 0 and seat == next_seat:
-		if passed:
-			state.opening_pass_stage = 1
-		else:
-			state.opening_pass_stage = -1
-	elif state.opening_pass_stage == 1 and seat == partner_seat:
-		state.opening_pass_stage = -1
-		if passed:
-			_log("Pase de salida anulado: %s (pareja de %s) tampoco pudo jugar." % [SEAT_NAMES[partner_seat], SEAT_NAMES[state.lead_player]])
-		else:
-			_award_bonus(GameState.TEAM_OF_SEAT[state.lead_player], state.bonus_pase_salida,
-				"Pase de salida (%s hizo pasar a %s)" % [SEAT_NAMES[state.lead_player], SEAT_NAMES[next_seat]])
-
-
-# Pase seguido: el jugador que acaba de jugar hizo pasar a los otros TRES y él sí
-# puede seguir jugando. Es acumulativo: cada vez que lo logra vuelve a sumar.
-func _check_pase_seguido() -> void:
-	if state.consecutive_passes != 3 or state.last_player_to_play < 0:
-		return
-	if state.current_player != state.last_player_to_play:
-		return
-	if state.legal_moves_for(state.current_player).is_empty():
-		return
-	_award_bonus(GameState.TEAM_OF_SEAT[state.current_player], state.bonus_pase_seguido,
-		"Pase seguido (%s hizo pasar a los otros tres)" % SEAT_NAMES[state.current_player])
-
-
-func _award_bonus(team: int, pts: int, reason: String) -> void:
-	if pts <= 0:
-		return
-	state.team_score[team] += pts
-	state.hand_bonuses.append({"team": team, "pts": pts, "reason": reason})
-	_log("[b]+%d[/b] al equipo %s — %s." % [pts, TEAM_NAMES[team], reason])
-	_show_toast("+%d  %s" % [pts, reason])
-	_update_top_bar()
-
-
-func _advance_turn() -> void:
-	state.current_player = (state.current_player + 1) % 4
-	_proceed_turn()
-
-
-func _check_hand_end(seat: int) -> void:
-	if state.hands[seat].is_empty():
-		_hand_won_by_domino(seat)
-	else:
-		_advance_turn()
+# El evento trae el tipo de bonificación y quién la provocó; el texto se redacta
+# acá, que es donde vive el idioma.
+func _bonus_text(e: Dictionary) -> String:
+	match str(e.get("kind", "")):
+		"pase_seguido":
+			return "Pase seguido (%s hizo pasar a los otros tres)" % SEAT_NAMES[e.seat]
+		"capicua":
+			return "Capicúa (%s cerró con ficha que iba en las dos puntas)" % SEAT_NAMES[e.seat]
+		"pase_salida":
+			return "Pase de salida (%s hizo pasar a %s)" % [SEAT_NAMES[e.seat], SEAT_NAMES[e.other_seat]]
+	return "Bonificación"
 
 
 # ===========================================================================
 # Fin de mano y puntuación
 # ===========================================================================
-# Regla de la mesa: la pareja ganadora suma los puntos de TODAS las fichas que
-# quedaron sobre la mesa, las de la propia pareja incluidas — no solo las del rival.
-func _hand_won_by_domino(winner_seat: int) -> void:
-	phase = Phase.HAND_OVER
-	var winner_team: int = GameState.TEAM_OF_SEAT[winner_seat]
-	var totals: Array = state.team_pip_totals()
-	var pts: int = totals[0] + totals[1]
-	state.team_score[winner_team] += pts
-	_log("[b]%s[/b] colocó su última ficha. ¡Equipo %s gana la mano! (+%d puntos)" % [SEAT_NAMES[winner_seat], TEAM_NAMES[winner_team], pts])
+# Arma la pantalla de fin de mano a partir del evento de cierre. Las reglas y los
+# puntos ya los resolvió GameState; acá solo se redacta lo que se lee en pantalla.
+func _show_hand_result_for(e: Dictionary) -> void:
+	if str(e.get("type", "")) == "hand_won":
+		var subtitle: String = "%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % SEAT_NAMES[e.winner_seat]
+		if e.capicua:
+			subtitle += " Cerró de capicúa: la ficha calzaba en las dos puntas."
+		_show_hand_result(
+			"¡Equipo %s gana la mano!" % TEAM_NAMES[e.winner_team],
+			subtitle,
+			{},
+			e.winner_team,
+			e.totals,
+			e.pts
+		)
+		return
 
-	var subtitle: String = "%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % SEAT_NAMES[winner_seat]
-	if state.last_play_was_capicua:
-		_award_bonus(winner_team, state.bonus_capicua, "Capicúa (%s cerró con ficha que iba en las dos puntas)" % SEAT_NAMES[winner_seat])
-		subtitle += " Cerró de capicúa: la ficha calzaba en las dos puntas."
-
-	state.lead_player = winner_seat
-	_render_all()
-	_show_hand_result(
-		"¡Equipo %s gana la mano!" % TEAM_NAMES[winner_team],
-		subtitle,
-		{},
-		winner_team,
-		totals,
-		pts
-	)
-
-
-# Regla de la mesa: el tranque se decide cara a cara entre quien puso la última
-# ficha y el jugador que le seguía en el turno (siempre de la pareja contraria,
-# porque los puestos se alternan). Gana la mano la pareja de quien tenga menos
-# puntos, y los puntos que suma son los de TODAS las fichas de la mesa, incluidas
-# las dos manos que se compararon.
-func _resolve_tranque() -> void:
-	phase = Phase.HAND_OVER
-	var totals: Array = state.team_pip_totals()
-	var pts: int = totals[0] + totals[1]
-
-	var closer: int = state.last_player_to_play if state.last_player_to_play >= 0 else state.lead_player
-	var challenger: int = (closer + 1) % 4
-	var closer_pips: int = state.seat_pips(closer)
-	var challenger_pips: int = state.seat_pips(challenger)
-
-	var winner_seat: int
-	var subtitle: String
-	if closer_pips < challenger_pips:
-		winner_seat = closer
-		subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips, SEAT_NAMES[closer]]
-	elif challenger_pips < closer_pips:
-		winner_seat = challenger
-		subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips, SEAT_NAMES[challenger]]
+	var tranque_subtitle: String
+	if e.tie:
+		tranque_subtitle = "%s trancó el juego. Empate con %s (%d - %d): gana la pareja que tiene la mano." % [SEAT_NAMES[e.closer], SEAT_NAMES[e.challenger], e.closer_pips, e.challenger_pips]
 	else:
-		# Empate entre los dos: se resuelve a favor de la pareja que tiene la mano.
-		winner_seat = closer if GameState.TEAM_OF_SEAT[closer] == GameState.TEAM_OF_SEAT[state.lead_player] else challenger
-		subtitle = "%s trancó el juego. Empate con %s (%d - %d): gana la pareja que tiene la mano." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips]
+		tranque_subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[e.closer], SEAT_NAMES[e.challenger], e.closer_pips, e.challenger_pips, SEAT_NAMES[e.winner_seat]]
 
-	var winner_team: int = GameState.TEAM_OF_SEAT[winner_seat]
-	state.team_score[winner_team] += pts
-	_log("¡Tranque! %s (%d) contra %s (%d): gana el equipo %s. (+%d puntos)" % [SEAT_NAMES[closer], closer_pips, SEAT_NAMES[challenger], challenger_pips, TEAM_NAMES[winner_team], pts])
+	# Se llena a mano en vez de con un literal: en un literal de diccionario una
+	# clave sin comillas se toma como el nombre literal, no como el valor de la
+	# variable, y las marcas nunca calzarían con el número de puesto.
+	var notes := {}
+	notes[e.closer] = "trancó"
+	notes[e.challenger] = "seguía"
 
-	# Dentro del equipo ganador, sale en la próxima mano quien se quedó con menos puntos en la mano.
-	var best_seat := -1
-	var best_pips := 9999
-	for s in range(4):
-		if GameState.TEAM_OF_SEAT[s] == winner_team:
-			var sp: int = state.seat_pips(s)
-			if sp < best_pips:
-				best_pips = sp
-				best_seat = s
-	state.lead_player = best_seat
-
-	_render_all()
-	var notes := {
-		closer: "trancó",
-		challenger: "seguía",
-	}
-	_show_hand_result("¡Tranque!", subtitle, notes, winner_team, totals, pts)
+	_show_hand_result("¡Tranque!", tranque_subtitle, notes, e.winner_team, e.totals, e.pts)
 
 
 # ===========================================================================
@@ -911,7 +854,7 @@ func _show_hand_result(title: String, subtitle: String, notes: Dictionary, winne
 
 		for b in state.hand_bonuses:
 			var b_lbl := Label.new()
-			b_lbl.text = "+%d  %s  →  %s" % [b.pts, b.reason, TEAM_NAMES[b.team]]
+			b_lbl.text = "+%d  %s  →  %s" % [b.pts, _bonus_text(b), TEAM_NAMES[b.team]]
 			b_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
 			b_lbl.custom_minimum_size = Vector2(520, 0)
 			b_lbl.add_theme_font_size_override("font_size", 13)
@@ -1008,27 +951,11 @@ func _on_hand_result_continue() -> void:
 	var winner_team: int = pending_winner_team
 	pending_winner_team = -1
 	hand_result_overlay.visible = false
-	_after_hand_scoring_check(winner_team)
 
-
-# Se revisan las DOS parejas, no solo la que ganó la mano: las bonificaciones se
-# acreditan durante la mano y pueden llevar a la meta a cualquiera de las dos.
-func _after_hand_scoring_check(winner_team: int) -> void:
-	var reached_0: bool = state.team_score[0] >= state.target_score
-	var reached_1: bool = state.team_score[1] >= state.target_score
-	if reached_0 or reached_1:
-		if reached_0 and reached_1:
-			# Si las dos llegaron, gana la de más puntos; si empatan, la de la mano.
-			if state.team_score[0] > state.team_score[1]:
-				_game_over(0)
-			elif state.team_score[1] > state.team_score[0]:
-				_game_over(1)
-			else:
-				_game_over(winner_team)
-		elif reached_0:
-			_game_over(0)
-		else:
-			_game_over(1)
+	# winning_team() revisa las dos parejas y devuelve -1 si nadie llegó a la meta.
+	var champion: int = state.winning_team(winner_team)
+	if champion >= 0:
+		_game_over(champion)
 	else:
 		start_new_hand()
 
@@ -1056,7 +983,7 @@ func _on_hand_tile_pressed(idx: int) -> void:
 		return
 	if state.board.is_empty() or chosen.ends.size() == 1:
 		var e: String = chosen.ends[0]
-		_play_tile(HUMAN_SEAT, idx, e)
+		_submit_play(HUMAN_SEAT, idx, e)
 	else:
 		_show_end_choice_popup(idx)
 
@@ -1076,7 +1003,7 @@ func _on_end_choice(end: String) -> void:
 		return
 	var idx := pending_hand_idx
 	pending_hand_idx = -1
-	_play_tile(HUMAN_SEAT, idx, end)
+	_submit_play(HUMAN_SEAT, idx, end)
 
 
 # ===========================================================================

@@ -193,8 +193,22 @@ da siempre el mismo reparto, así se puede reproducir una mano exacta para depur
 cuando se juegue en red el servidor será la única fuente del azar. No se usa
 `Array.shuffle()` porque toma el generador global y no se puede fijar por semilla.
 
-**Todavía en `Main.gd`, pendiente de mudarse:** las transiciones (jugar, pasar,
-cerrar mano, bonificaciones, tranque). Ese es el siguiente paso del refactor.
+### Transiciones por eventos
+
+`apply_play()` y `apply_pass()` aplican la jugada y devuelven una **lista de eventos**
+que describe lo que pasó (`played`, `passed`, `bonus`, `hand_won`, `tranque`,
+`rejected`…), en vez de escribir en pantalla. `Main.gd` los traduce a texto, avisos y
+pantallas en `_handle_event()`.
+
+Los eventos llevan datos estructurados, no texto: una bonificación viaja como
+`{"kind": "capicua", "seat": 2, "pts": 30}` y el idioma se resuelve en la interfaz.
+Cuando el juego sea en red, esos mismos eventos llegarán del servidor y esa capa de
+traducción no cambia.
+
+`apply_play()` **valida** la jugada contra las jugadas legales y devuelve `rejected`
+si no calza. Jugando en local no debería ocurrir nunca, pero es la base de la
+autoridad del servidor: un cliente modificado no podrá inventar una jugada, una
+capicúa ni un turno ajeno.
 
 ## Cómo se dibuja el tablero
 
