@@ -13,12 +13,16 @@ puestos los maneja la IA.
 
 1. Abre Godot y usa **Importar** apuntando a `project.godot`.
 2. Dale **Play** (F5).
-3. En la pantalla inicial elige la meta de puntos (100, 150 o 200) y pulsa
-   **Comenzar partida**.
+3. En la pantalla inicial elige la meta de puntos (100, 150 o 200) y el valor de las
+   tres bonificaciones (pase seguido, capicúa y pase de salida; 30 por defecto cada
+   una). Luego pulsa **Comenzar partida**.
 4. Cuando sea tu turno, las fichas jugables de tu mano se ven en color normal y las
    que no puedes jugar se ven grises. Haz clic en la ficha que quieras jugar.
 5. Si la ficha calza en las dos puntas, aparece un aviso para que elijas en cuál
    jugarla (izquierda o derecha).
+6. Al terminar cada mano aparece una pantalla con el resultado: quién ganó, las
+   fichas que se cuentan (con los puntos de cada jugador y el total de la pareja) y
+   el marcador. La partida sigue cuando pulsas **Continuar**.
 
 > Si cambias el código con el juego abierto, detén la ejecución (**Stop**) y dale
 > **Play** de nuevo: Godot no siempre aplica cambios de GDScript a una escena que ya
@@ -41,23 +45,50 @@ Basadas en la guía del dominó dominicano (formato estándar de 4 jugadores):
 | Si no puedes jugar | Se pasa automáticamente (no hay que pulsar nada) |
 | Dobles | Se colocan cruzados respecto a la cadena |
 | Fin de mano | Quien coloca su última ficha gana la mano |
-| Puntuación | La pareja ganadora suma los puntos de las fichas que le quedaron a la pareja contraria |
+| Puntuación | La pareja ganadora suma los puntos de **todas** las fichas que quedaron en la mesa, las de su propia pareja incluidas |
 | Meta | 100, 150 o 200 puntos (se elige antes de empezar) |
 
 ### Tranque
 
-Cuando nadie puede continuar (cuatro pases seguidos):
+Cuando nadie puede continuar (cuatro pases seguidos), la mano se decide **cara a
+cara** entre dos jugadores:
 
-1. Se suman los puntos de las fichas que le quedan a cada pareja.
-2. Gana la mano la pareja con **menos** puntos.
-3. La pareja ganadora suma los puntos de la pareja perdedora.
-4. **Empate:** gana la pareja que tiene la mano (la del jugador que salió en esa mano).
+1. Se toma a quien puso la última ficha (el que trancó) y al jugador que le seguía
+   en el turno. Como los puestos se alternan, esos dos son siempre de parejas
+   contrarias.
+2. Se comparan los puntos que le quedan a esos dos: gana la mano la pareja de quien
+   tenga **menos** puntos.
+3. Esa pareja suma los puntos de **todas** las fichas que quedaron en la mesa —
+   incluidas las dos manos que se compararon y las de su propia pareja.
+4. **Empate entre los dos:** gana la pareja que tiene la mano (la del jugador que
+   salió en esa mano).
 5. En la mano siguiente sale, dentro de la pareja ganadora, quien se quedó con menos
    puntos en la mano.
 
-Los puntos 3 y 5 son **reglas de casa**: la guía deja esos detalles a criterio de la
-mesa, así que se eligió una convención razonable. Si tu mesa lo hace distinto, se
-cambia en `_resolve_tranque()`.
+Los puntos 4 y 5 son **reglas de casa** que la guía deja a criterio de la mesa, así
+que se eligió una convención razonable. Si tu mesa lo hace distinto, se cambian en
+`_resolve_tranque()`.
+
+### Bonificaciones
+
+Se configuran antes de empezar (30 por defecto cada una) y se acreditan al equipo en
+el momento en que se ganan; el resumen de fin de mano las lista aparte de los puntos
+de la mesa.
+
+| Bonificación | Cuándo se gana |
+|---|---|
+| **Pase seguido** | Un jugador pone una ficha que deja sin jugada a los otros **tres** (rivales y compañero), y él sí puede seguir jugando. Es acumulativo: cada vez que lo consigue vuelve a sumar. No es lo mismo que un tranque — en el tranque tampoco puede jugar él. |
+| **Capicúa** | Un jugador se pega con una ficha que calzaba en **las dos puntas**. Solo cuenta con fichas de caras distintas: los dobles no aplican. Se suma sobre los puntos que recoge de la mesa. |
+| **Pase de salida** | Quien sale de la mano deja sin jugada al jugador que le sigue en el turno. Se **anula** si su propio compañero tampoco puede jugar en su primer turno. |
+
+### Indicadores en la mesa
+
+- Una **bolita** junto al nombre de cada puesto se enciende en amarillo cuando es su
+  turno.
+- El puesto que salió en la mano lleva la marca **· salió**, para tener siempre la
+  referencia de quién jugó primero en esa ronda.
+- Un **aviso flotante** aparece y se desvanece cuando alguien pasa el turno o cuando
+  se gana una bonificación.
 
 ## Estructura del proyecto
 

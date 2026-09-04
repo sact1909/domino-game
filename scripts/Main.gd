@@ -25,6 +25,20 @@ var phase: int = Phase.SETUP
 var target_score: int = 200
 var team_score: Array = [0, 0]
 
+# Bonificaciones (reglas de mesa): se configuran antes de empezar la partida.
+var bonus_pase_seguido: int = 30
+var bonus_capicua: int = 30
+var bonus_pase_salida: int = 30
+
+# Etapa del "pase de salida" dentro de la mano: -1 inactivo, 0 esperando el turno
+# del que sigue al que salió, 1 ese jugador pasó y falta ver si la pareja también.
+var opening_pass_stage: int = -1
+# ¿La última ficha jugada calzaba en las dos puntas? (para la capicúa)
+var last_play_was_capicua: bool = false
+# Bonificaciones ganadas en la mano, para mostrarlas en el resumen:
+# cada entrada es {"team": int, "pts": int, "reason": String}
+var hand_bonuses: Array = []
+
 var hands: Array = [[], [], [], []]
 var board: Array = []
 var left_end: int = -1
@@ -33,6 +47,9 @@ var right_end: int = -1
 var current_player: int = 0
 var lead_player: int = 0
 var consecutive_passes: int = 0
+# Quién puso la última ficha: en un tranque, sus fichas se comparan con las del
+# jugador que le seguía en el turno para decidir quién gana la mano.
+var last_player_to_play: int = -1
 var is_first_hand_of_game: bool = true
 var must_open_with_double_six: bool = false
 # Índice dentro de "board" de la ficha inicial (el ancla fija de la hilera). Todo lo
@@ -48,9 +65,10 @@ var lbl_score1: Label
 var lbl_turn: Label
 var lbl_ends: Label
 
+var north_title: Label
 var north_row: HBoxContainer
 var south_hand_row: HBoxContainer
-var pass_button: Button
+var pass_status: Label
 
 var west_title: Label
 var west_stack: VBoxContainer
@@ -64,9 +82,25 @@ var log_rt: RichTextLabel
 var start_overlay: Control
 var selected_target: int = 200
 var target_option_buttons: Array = []
+var spin_pase_seguido: SpinBox
+var spin_capicua: SpinBox
+var spin_pase_salida: SpinBox
 
 var end_choice_popup: PanelContainer
 var pending_hand_idx: int = -1
+
+# Aviso flotante (pases, bonificaciones) y las bolitas de turno de cada puesto.
+var toast_panel: PanelContainer
+var toast_label: Label
+var toast_tween: Tween
+var turn_dots: Array = [null, null, null, null]
+var south_title: Label
+
+# Pantalla de fin de mano: se queda esperando el botón "Continuar" en vez de seguir
+# sola, para que se pueda revisar de dónde salieron los puntos.
+var hand_result_overlay: Control
+var hand_result_content: VBoxContainer
+var pending_winner_team: int = -1
 
 var game_over_overlay: Control
 var game_over_label: Label
@@ -86,6 +120,8 @@ func _ready() -> void:
 	_build_board_area()
 	_build_log_panel()
 	_build_end_choice_popup()
+	_build_toast()
+	_build_hand_result_overlay()
 	_build_game_over_overlay()
 	_build_start_overlay()
 
@@ -128,27 +164,35 @@ func _build_top_bar() -> void:
 	row.add_child(lbl_turn)
 
 
+# Va en su propia franja, debajo del panel de Norte: antes quedaba detrás de las
+# fichas de Norte y no se leía.
 func _build_ends_label() -> void:
 	lbl_ends = Label.new()
-	lbl_ends.position = Vector2(180, 126)
-	lbl_ends.size = Vector2(920, 16)
+	lbl_ends.position = Vector2(180, 178)
+	lbl_ends.size = Vector2(920, 22)
 	lbl_ends.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl_ends.add_theme_font_size_override("font_size", 13)
+	lbl_ends.add_theme_font_size_override("font_size", 15)
 	add_child(lbl_ends)
 
 
 func _build_north_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(440, 50)
-	panel.size = Vector2(400, 78)
-	panel.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.position = Vector2(440, 54)
+	panel.size = Vector2(400, 120)
+	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
 	add_child(panel)
 
-	var title := Label.new()
-	title.text = "Norte (IA) — compañero de Sur"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 13)
-	panel.add_child(title)
+	var title_row := HBoxContainer.new()
+	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	title_row.add_theme_constant_override("separation", 8)
+	panel.add_child(title_row)
+
+	turn_dots[2] = _make_turn_dot()
+	title_row.add_child(turn_dots[2])
+
+	north_title = Label.new()
+	north_title.add_theme_font_size_override("font_size", 14)
+	title_row.add_child(north_title)
 
 	north_row = HBoxContainer.new()
 	north_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -158,44 +202,47 @@ func _build_north_panel() -> void:
 
 func _build_south_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(300, 720)
-	panel.size = Vector2(680, 170)
-	panel.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.position = Vector2(300, 668)
+	panel.size = Vector2(680, 225)
+	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
 	add_child(panel)
 
-	var title := Label.new()
-	title.text = "Tu mano (Sur)"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 16)
-	panel.add_child(title)
+	var title_row := HBoxContainer.new()
+	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	title_row.add_theme_constant_override("separation", 8)
+	panel.add_child(title_row)
+
+	turn_dots[0] = _make_turn_dot()
+	title_row.add_child(turn_dots[0])
+
+	south_title = Label.new()
+	south_title.text = "Tu mano (Sur)"
+	south_title.add_theme_font_size_override("font_size", 16)
+	title_row.add_child(south_title)
 
 	south_hand_row = HBoxContainer.new()
 	south_hand_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	south_hand_row.add_theme_constant_override("separation", 8)
 	panel.add_child(south_hand_row)
 
-	pass_button = Button.new()
-	pass_button.text = "Pasar"
-	pass_button.disabled = true
-	pass_button.custom_minimum_size = Vector2(280, 36)
-	var pass_center := CenterContainer.new()
-	pass_center.add_child(pass_button)
-	panel.add_child(pass_center)
+	# Solo informa el estado del turno (el pase es automático), así que es una
+	# etiqueta y no un botón deshabilitado.
+	pass_status = Label.new()
+	pass_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pass_status.add_theme_font_size_override("font_size", 14)
+	pass_status.add_theme_color_override("font_color", Color(0.85, 0.88, 0.85))
+	panel.add_child(pass_status)
 
 
+# En los laterales la etiqueta va DEBAJO de la pila de fichas, siguiendo la columna,
+# para que se lea junto a las fichas de ese jugador y no arriba, despegada de ellas.
 func _build_west_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(10, 145)
-	panel.size = Vector2(160, 565)
+	panel.position = Vector2(10, 204)
+	panel.size = Vector2(160, 456)
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	panel.add_theme_constant_override("separation", 10)
+	panel.add_theme_constant_override("separation", 8)
 	add_child(panel)
-
-	west_title = Label.new()
-	west_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	west_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	west_title.add_theme_font_size_override("font_size", 14)
-	panel.add_child(west_title)
 
 	var center := CenterContainer.new()
 	panel.add_child(center)
@@ -205,20 +252,28 @@ func _build_west_panel() -> void:
 	west_stack.add_theme_constant_override("separation", 6)
 	center.add_child(west_stack)
 
+	var title_row := HBoxContainer.new()
+	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	title_row.add_theme_constant_override("separation", 6)
+	panel.add_child(title_row)
+
+	turn_dots[3] = _make_turn_dot()
+	title_row.add_child(turn_dots[3])
+
+	west_title = Label.new()
+	west_title.autowrap_mode = TextServer.AUTOWRAP_WORD
+	west_title.custom_minimum_size = Vector2(110, 0)
+	west_title.add_theme_font_size_override("font_size", 14)
+	title_row.add_child(west_title)
+
 
 func _build_east_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(1110, 145)
-	panel.size = Vector2(160, 565)
+	panel.position = Vector2(1110, 204)
+	panel.size = Vector2(160, 456)
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	panel.add_theme_constant_override("separation", 10)
+	panel.add_theme_constant_override("separation", 8)
 	add_child(panel)
-
-	east_title = Label.new()
-	east_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	east_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	east_title.add_theme_font_size_override("font_size", 14)
-	panel.add_child(east_title)
 
 	var center := CenterContainer.new()
 	panel.add_child(center)
@@ -228,19 +283,33 @@ func _build_east_panel() -> void:
 	east_stack.add_theme_constant_override("separation", 6)
 	center.add_child(east_stack)
 
+	var title_row := HBoxContainer.new()
+	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	title_row.add_theme_constant_override("separation", 6)
+	panel.add_child(title_row)
+
+	turn_dots[1] = _make_turn_dot()
+	title_row.add_child(turn_dots[1])
+
+	east_title = Label.new()
+	east_title.autowrap_mode = TextServer.AUTOWRAP_WORD
+	east_title.custom_minimum_size = Vector2(110, 0)
+	east_title.add_theme_font_size_override("font_size", 14)
+	title_row.add_child(east_title)
+
 
 func _build_board_area() -> void:
 	board_viewport = Control.new()
-	board_viewport.position = Vector2(180, 145)
-	board_viewport.size = Vector2(920, 565)
+	board_viewport.position = Vector2(180, 204)
+	board_viewport.size = Vector2(920, 456)
 	board_viewport.clip_contents = true
 	add_child(board_viewport)
 
 
 func _build_log_panel() -> void:
 	var panel := PanelContainer.new()
-	panel.position = Vector2(10, 720)
-	panel.size = Vector2(280, 170)
+	panel.position = Vector2(10, 668)
+	panel.size = Vector2(280, 222)
 	add_child(panel)
 
 	var vb := VBoxContainer.new()
@@ -262,7 +331,7 @@ func _build_log_panel() -> void:
 
 func _build_end_choice_popup() -> void:
 	end_choice_popup = PanelContainer.new()
-	end_choice_popup.position = Vector2(390, 150)
+	end_choice_popup.position = Vector2(390, 214)
 	end_choice_popup.size = Vector2(500, 72)
 	end_choice_popup.visible = false
 	add_child(end_choice_popup)
@@ -291,6 +360,102 @@ func _build_end_choice_popup() -> void:
 	right_btn.text = "Derecha"
 	right_btn.pressed.connect(func(): _on_end_choice("R"))
 	row.add_child(right_btn)
+
+
+func _build_toast() -> void:
+	toast_panel = PanelContainer.new()
+	toast_panel.position = Vector2(390, 596)
+	toast_panel.size = Vector2(500, 44)
+	toast_panel.visible = false
+	toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(toast_panel)
+
+	toast_label = Label.new()
+	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast_label.add_theme_font_size_override("font_size", 17)
+	toast_panel.add_child(toast_label)
+
+
+# Aparece, se queda un momento y se desvanece. Si llega otro aviso antes de que
+# termine, se corta el anterior para que no se solapen los desvanecidos.
+func _show_toast(text: String) -> void:
+	toast_label.text = text
+	if toast_tween != null and toast_tween.is_valid():
+		toast_tween.kill()
+	toast_panel.modulate = Color(1, 1, 1, 1)
+	toast_panel.visible = true
+	toast_tween = create_tween()
+	toast_tween.tween_interval(1.1)
+	toast_tween.tween_property(toast_panel, "modulate:a", 0.0, 0.7)
+	toast_tween.tween_callback(func(): toast_panel.visible = false)
+
+
+func _make_turn_dot() -> Panel:
+	var dot := Panel.new()
+	dot.custom_minimum_size = Vector2(16, 16)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.25, 0.32, 0.26)
+	sb.set_corner_radius_all(8)
+	dot.add_theme_stylebox_override("panel", sb)
+	return dot
+
+
+# Prende la bolita del puesto en turno y apaga las demás.
+func _update_turn_dots() -> void:
+	for seat in range(4):
+		var dot: Panel = turn_dots[seat]
+		if dot == null:
+			continue
+		var sb := StyleBoxFlat.new()
+		sb.set_corner_radius_all(8)
+		if phase == Phase.PLAYING and seat == current_player:
+			sb.bg_color = Color(1, 0.85, 0.25)
+		else:
+			sb.bg_color = Color(0.25, 0.32, 0.26)
+		dot.add_theme_stylebox_override("panel", sb)
+
+
+# Marca del jugador que salió en la mano, para tener siempre la referencia de quién
+# jugó primero en esa ronda.
+func _lead_mark(seat: int) -> String:
+	if seat == lead_player:
+		return "  ·  salió"
+	return ""
+
+
+func _build_hand_result_overlay() -> void:
+	hand_result_overlay = ColorRect.new()
+	hand_result_overlay.color = Color(0, 0, 0, 0.7)
+	hand_result_overlay.position = Vector2.ZERO
+	hand_result_overlay.size = Vector2(1280, 900)
+	hand_result_overlay.visible = false
+	add_child(hand_result_overlay)
+
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	hand_result_overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(560, 0)
+	center.add_child(panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 14)
+	panel.add_child(vb)
+
+	# El contenido se arma de nuevo en cada mano (las fichas cambian); el botón se
+	# queda fijo, así su señal se conecta una sola vez.
+	hand_result_content = VBoxContainer.new()
+	hand_result_content.add_theme_constant_override("separation", 10)
+	vb.add_child(hand_result_content)
+
+	var continue_btn := Button.new()
+	continue_btn.text = "Continuar"
+	continue_btn.custom_minimum_size = Vector2(200, 42)
+	continue_btn.pressed.connect(_on_hand_result_continue)
+	var btn_center := CenterContainer.new()
+	btn_center.add_child(continue_btn)
+	vb.add_child(btn_center)
 
 
 func _build_game_over_overlay() -> void:
@@ -379,6 +544,15 @@ func _build_start_overlay() -> void:
 		goal_row.add_child(b)
 		target_option_buttons.append(b)
 
+	var bonus_lbl := Label.new()
+	bonus_lbl.text = "Valor de las bonificaciones:"
+	bonus_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(bonus_lbl)
+
+	spin_pase_seguido = _add_bonus_field(vb, "Valor del Pase seguido", bonus_pase_seguido)
+	spin_capicua = _add_bonus_field(vb, "Valor de la Capicúa", bonus_capicua)
+	spin_pase_salida = _add_bonus_field(vb, "Valor del Pase de Salida", bonus_pase_salida)
+
 	var rules_lbl := Label.new()
 	rules_lbl.text = "Reglas: dominó doble-seis (28 fichas), 7 fichas por jugador, no existe pozo. Si tienes ficha jugable, debes jugarla: no se puede pasar voluntariamente. En la primera mano sale el 6-6 (el burro)."
 	rules_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -394,6 +568,28 @@ func _build_start_overlay() -> void:
 	var start_center := CenterContainer.new()
 	start_center.add_child(start_btn)
 	vb.add_child(start_center)
+
+
+func _add_bonus_field(parent: VBoxContainer, label_text: String, default_value: int) -> SpinBox:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	parent.add_child(row)
+
+	var lbl := Label.new()
+	lbl.text = label_text
+	lbl.custom_minimum_size = Vector2(280, 0)
+	lbl.add_theme_font_size_override("font_size", 14)
+	row.add_child(lbl)
+
+	var spin := SpinBox.new()
+	spin.min_value = 0
+	spin.max_value = 500
+	spin.step = 5
+	spin.value = default_value
+	spin.custom_minimum_size = Vector2(110, 0)
+	row.add_child(spin)
+
+	return spin
 
 
 func _make_tile_back(w: int, h: int) -> Control:
@@ -420,11 +616,15 @@ func _on_goal_selected(goal: int) -> void:
 
 func _on_start_pressed() -> void:
 	target_score = selected_target
+	bonus_pase_seguido = int(spin_pase_seguido.value)
+	bonus_capicua = int(spin_capicua.value)
+	bonus_pase_salida = int(spin_pase_salida.value)
 	start_overlay.visible = false
 	team_score = [0, 0]
 	is_first_hand_of_game = true
 	log_rt.clear()
 	_log("Partida nueva. Meta: %d puntos." % target_score)
+	_log("Bonificaciones — pase seguido: %d, capicúa: %d, pase de salida: %d." % [bonus_pase_seguido, bonus_capicua, bonus_pase_salida])
 	start_new_hand()
 
 
@@ -457,6 +657,10 @@ func start_new_hand() -> void:
 	right_end = -1
 	opening_tile_index = -1
 	consecutive_passes = 0
+	last_player_to_play = -1
+	opening_pass_stage = -1
+	last_play_was_capicua = false
+	hand_bonuses = []
 	phase = Phase.PLAYING
 
 	if is_first_hand_of_game:
@@ -509,9 +713,13 @@ func _legal_moves_for(seat: int) -> Array:
 func _proceed_turn() -> void:
 	if phase != Phase.PLAYING:
 		return
+	# Se evalúa al volver el turno: si los otros tres pasaron y este jugador sí
+	# puede jugar, la ficha que puso provocó un pase seguido.
+	_check_pase_seguido()
 	_update_top_bar()
 	_render_south_hand()
-	_update_pass_button()
+	_update_pass_status()
+	_update_turn_dots()
 
 	# Si de verdad no hay ninguna ficha jugable (sea IA o el humano), se pasa solo:
 	# nadie puede quedarse esperando un clic que no llega, y así el tranque (4 pases
@@ -552,9 +760,16 @@ func _ai_take_turn(seat: int) -> void:
 
 func _play_tile(seat: int, idx: int, end: String) -> void:
 	var t: Domino = hands[seat][idx]
+	var was_opening: bool = board.is_empty()
+
+	# Capicúa: la ficha calzaba en las DOS puntas y tiene las caras distintas (los
+	# dobles no cuentan). Se comprueba antes de colocarla, con las puntas de ahora.
+	last_play_was_capicua = (not was_opening) and (not t.is_double()) \
+		and t.has_value(left_end) and t.has_value(right_end)
+
 	hands[seat].remove_at(idx)
 
-	if board.is_empty():
+	if was_opening:
 		board.push_back(t)
 		left_end = t.a
 		right_end = t.b
@@ -571,7 +786,15 @@ func _play_tile(seat: int, idx: int, end: String) -> void:
 
 	must_open_with_double_six = false
 	consecutive_passes = 0
+	last_player_to_play = seat
 	_log("%s jugó [b]%s[/b]." % [SEAT_NAMES[seat], str(t)])
+
+	if was_opening:
+		# Empieza la ventana del pase de salida: hay que ver qué hace el siguiente.
+		opening_pass_stage = 0
+	else:
+		_resolve_opening_pass(seat, false)
+
 	_render_all()
 	_check_hand_end(seat)
 
@@ -579,10 +802,58 @@ func _play_tile(seat: int, idx: int, end: String) -> void:
 func _handle_pass(seat: int) -> void:
 	consecutive_passes += 1
 	_log("%s pasa (no tiene fichas con %d ni %d)." % [SEAT_NAMES[seat], left_end, right_end])
+	_show_toast("%s pasó" % SEAT_NAMES[seat])
+	_resolve_opening_pass(seat, true)
 	if consecutive_passes >= 4:
 		_resolve_tranque()
 	else:
 		_advance_turn()
+
+
+# Pase de salida: si el jugador que sigue al que salió no puede jugar, la pareja del
+# que salió gana la bonificación... salvo que su propio compañero tampoco pueda
+# jugar en su primer turno, caso en el que se anula.
+func _resolve_opening_pass(seat: int, passed: bool) -> void:
+	if opening_pass_stage < 0:
+		return
+	var next_seat: int = (lead_player + 1) % 4
+	var partner_seat: int = (lead_player + 2) % 4
+
+	if opening_pass_stage == 0 and seat == next_seat:
+		if passed:
+			opening_pass_stage = 1
+		else:
+			opening_pass_stage = -1
+	elif opening_pass_stage == 1 and seat == partner_seat:
+		opening_pass_stage = -1
+		if passed:
+			_log("Pase de salida anulado: %s (pareja de %s) tampoco pudo jugar." % [SEAT_NAMES[partner_seat], SEAT_NAMES[lead_player]])
+		else:
+			_award_bonus(TEAM_OF_SEAT[lead_player], bonus_pase_salida,
+				"Pase de salida (%s hizo pasar a %s)" % [SEAT_NAMES[lead_player], SEAT_NAMES[next_seat]])
+
+
+# Pase seguido: el jugador que acaba de jugar hizo pasar a los otros TRES y él sí
+# puede seguir jugando. Es acumulativo: cada vez que lo logra vuelve a sumar.
+func _check_pase_seguido() -> void:
+	if consecutive_passes != 3 or last_player_to_play < 0:
+		return
+	if current_player != last_player_to_play:
+		return
+	if _legal_moves_for(current_player).is_empty():
+		return
+	_award_bonus(TEAM_OF_SEAT[current_player], bonus_pase_seguido,
+		"Pase seguido (%s hizo pasar a los otros tres)" % SEAT_NAMES[current_player])
+
+
+func _award_bonus(team: int, pts: int, reason: String) -> void:
+	if pts <= 0:
+		return
+	team_score[team] += pts
+	hand_bonuses.append({"team": team, "pts": pts, "reason": reason})
+	_log("[b]+%d[/b] al equipo %s — %s." % [pts, TEAM_NAMES[team], reason])
+	_show_toast("+%d  %s" % [pts, reason])
+	_update_top_bar()
 
 
 func _advance_turn() -> void:
@@ -600,70 +871,260 @@ func _check_hand_end(seat: int) -> void:
 # ===========================================================================
 # Fin de mano y puntuación
 # ===========================================================================
+func _seat_pips(seat: int) -> int:
+	var total := 0
+	for t in hands[seat]:
+		total += t.pips()
+	return total
+
+
+func _team_pip_totals() -> Array:
+	var totals := [0, 0]
+	for s in range(4):
+		totals[TEAM_OF_SEAT[s]] += _seat_pips(s)
+	return totals
+
+
+# Regla de la mesa: la pareja ganadora suma los puntos de TODAS las fichas que
+# quedaron sobre la mesa, las de la propia pareja incluidas — no solo las del rival.
 func _hand_won_by_domino(winner_seat: int) -> void:
 	phase = Phase.HAND_OVER
 	var winner_team: int = TEAM_OF_SEAT[winner_seat]
-	var loser_team: int = 1 - winner_team
-	var pts := 0
-	for s in range(4):
-		if TEAM_OF_SEAT[s] == loser_team:
-			for t in hands[s]:
-				pts += t.pips()
+	var totals: Array = _team_pip_totals()
+	var pts: int = totals[0] + totals[1]
 	team_score[winner_team] += pts
 	_log("[b]%s[/b] colocó su última ficha. ¡Equipo %s gana la mano! (+%d puntos)" % [SEAT_NAMES[winner_seat], TEAM_NAMES[winner_team], pts])
+
+	var subtitle: String = "%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % SEAT_NAMES[winner_seat]
+	if last_play_was_capicua:
+		_award_bonus(winner_team, bonus_capicua, "Capicúa (%s cerró con ficha que iba en las dos puntas)" % SEAT_NAMES[winner_seat])
+		subtitle += " Cerró de capicúa: la ficha calzaba en las dos puntas."
+
 	lead_player = winner_seat
 	_render_all()
-	await get_tree().create_timer(2.2).timeout
-	_after_hand_scoring_check(winner_team)
+	_show_hand_result(
+		"¡Equipo %s gana la mano!" % TEAM_NAMES[winner_team],
+		subtitle,
+		{},
+		winner_team,
+		totals,
+		pts
+	)
 
 
+# Regla de la mesa: el tranque se decide cara a cara entre quien puso la última
+# ficha y el jugador que le seguía en el turno (siempre de la pareja contraria,
+# porque los puestos se alternan). Gana la mano la pareja de quien tenga menos
+# puntos, y los puntos que suma son los de TODAS las fichas de la mesa, incluidas
+# las dos manos que se compararon.
 func _resolve_tranque() -> void:
 	phase = Phase.HAND_OVER
-	var team_pips := [0, 0]
-	for s in range(4):
-		var total := 0
-		for t in hands[s]:
-			total += t.pips()
-		team_pips[TEAM_OF_SEAT[s]] += total
+	var totals: Array = _team_pip_totals()
+	var pts: int = totals[0] + totals[1]
 
-	var winner_team: int
-	if team_pips[0] < team_pips[1]:
-		winner_team = 0
-	elif team_pips[1] < team_pips[0]:
-		winner_team = 1
+	var closer: int = last_player_to_play if last_player_to_play >= 0 else lead_player
+	var challenger: int = (closer + 1) % 4
+	var closer_pips: int = _seat_pips(closer)
+	var challenger_pips: int = _seat_pips(challenger)
+
+	var winner_seat: int
+	var subtitle: String
+	if closer_pips < challenger_pips:
+		winner_seat = closer
+		subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips, SEAT_NAMES[closer]]
+	elif challenger_pips < closer_pips:
+		winner_seat = challenger
+		subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips, SEAT_NAMES[challenger]]
 	else:
-		winner_team = TEAM_OF_SEAT[lead_player]
+		# Empate entre los dos: se resuelve a favor de la pareja que tiene la mano.
+		winner_seat = closer if TEAM_OF_SEAT[closer] == TEAM_OF_SEAT[lead_player] else challenger
+		subtitle = "%s trancó el juego. Empate con %s (%d - %d): gana la pareja que tiene la mano." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips]
 
-	var loser_team: int = 1 - winner_team
-	var pts: int = team_pips[loser_team]
+	var winner_team: int = TEAM_OF_SEAT[winner_seat]
 	team_score[winner_team] += pts
-
-	if team_pips[0] == team_pips[1]:
-		_log("¡Tranque! Empate en puntos (%d - %d). Gana el equipo %s por tener la mano. (+%d puntos)" % [team_pips[0], team_pips[1], TEAM_NAMES[winner_team], pts])
-	else:
-		_log("¡Tranque! Equipo %s gana con menos puntos (%d contra %d). (+%d puntos)" % [TEAM_NAMES[winner_team], team_pips[winner_team], team_pips[loser_team], pts])
+	_log("¡Tranque! %s (%d) contra %s (%d): gana el equipo %s. (+%d puntos)" % [SEAT_NAMES[closer], closer_pips, SEAT_NAMES[challenger], challenger_pips, TEAM_NAMES[winner_team], pts])
 
 	# Dentro del equipo ganador, sale en la próxima mano quien se quedó con menos puntos en la mano.
 	var best_seat := -1
 	var best_pips := 9999
 	for s in range(4):
 		if TEAM_OF_SEAT[s] == winner_team:
-			var sp := 0
-			for t in hands[s]:
-				sp += t.pips()
+			var sp: int = _seat_pips(s)
 			if sp < best_pips:
 				best_pips = sp
 				best_seat = s
 	lead_player = best_seat
 
 	_render_all()
-	await get_tree().create_timer(2.6).timeout
+	var notes := {
+		closer: "trancó",
+		challenger: "seguía",
+	}
+	_show_hand_result("¡Tranque!", subtitle, notes, winner_team, totals, pts)
+
+
+# ===========================================================================
+# Pantalla de fin de mano
+# ===========================================================================
+# Siempre se muestran las cuatro manos, porque todas las fichas que quedaron suman.
+# "notes" marca jugadores concretos (en el tranque, quién trancó y quién seguía).
+func _show_hand_result(title: String, subtitle: String, notes: Dictionary, winner_team: int, team_pips: Array, pts: int) -> void:
+	pending_winner_team = winner_team
+
+	for c in hand_result_content.get_children():
+		hand_result_content.remove_child(c)
+		c.queue_free()
+
+	var title_lbl := Label.new()
+	title_lbl.text = title
+	title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title_lbl.add_theme_font_size_override("font_size", 26)
+	hand_result_content.add_child(title_lbl)
+
+	var sub_lbl := Label.new()
+	sub_lbl.text = subtitle
+	sub_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
+	sub_lbl.custom_minimum_size = Vector2(520, 0)
+	sub_lbl.add_theme_font_size_override("font_size", 14)
+	hand_result_content.add_child(sub_lbl)
+
+	var count_head := Label.new()
+	count_head.text = "Fichas que quedaron en la mesa (todas se cuentan)"
+	count_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	count_head.add_theme_font_size_override("font_size", 14)
+	hand_result_content.add_child(count_head)
+
+	for team in [0, 1]:
+		hand_result_content.add_child(_make_team_summary(team, team_pips[team], "Equipo %s" % TEAM_NAMES[team], notes))
+
+	if not hand_bonuses.is_empty():
+		var bonus_head := Label.new()
+		bonus_head.text = "Bonificaciones de la mano"
+		bonus_head.add_theme_font_size_override("font_size", 15)
+		bonus_head.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
+		hand_result_content.add_child(bonus_head)
+
+		for b in hand_bonuses:
+			var b_lbl := Label.new()
+			b_lbl.text = "+%d  %s  →  %s" % [b.pts, b.reason, TEAM_NAMES[b.team]]
+			b_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
+			b_lbl.custom_minimum_size = Vector2(520, 0)
+			b_lbl.add_theme_font_size_override("font_size", 13)
+			hand_result_content.add_child(b_lbl)
+
+	var pts_lbl := Label.new()
+	pts_lbl.text = "Equipo %s suma %d puntos de la mesa  (%d + %d)" % [TEAM_NAMES[winner_team], pts, team_pips[0], team_pips[1]]
+	pts_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pts_lbl.add_theme_font_size_override("font_size", 20)
+	pts_lbl.add_theme_color_override("font_color", Color(0.6, 1, 0.6))
+	hand_result_content.add_child(pts_lbl)
+
+	var score_lbl := Label.new()
+	score_lbl.text = "Marcador: %s %d  —  %s %d      (meta: %d)" % [TEAM_NAMES[0], team_score[0], TEAM_NAMES[1], team_score[1], target_score]
+	score_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	score_lbl.add_theme_font_size_override("font_size", 15)
+	hand_result_content.add_child(score_lbl)
+
+	hand_result_overlay.visible = true
+
+
+func _make_team_summary(team: int, total: int, header: String, notes: Dictionary) -> VBoxContainer:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+
+	var head := Label.new()
+	head.text = header
+	head.add_theme_font_size_override("font_size", 15)
+	head.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
+	box.add_child(head)
+
+	for s in range(4):
+		if TEAM_OF_SEAT[s] == team:
+			box.add_child(_make_seat_summary_row(s, notes.get(s, "")))
+
+	var total_lbl := Label.new()
+	total_lbl.text = "Total del equipo: %d" % total
+	total_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	total_lbl.add_theme_font_size_override("font_size", 15)
+	box.add_child(total_lbl)
+
+	return box
+
+
+func _make_seat_summary_row(seat: int, note: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var name_lbl := Label.new()
+	if note.is_empty():
+		name_lbl.text = "%s:" % SEAT_NAMES[seat]
+	else:
+		name_lbl.text = "%s (%s):" % [SEAT_NAMES[seat], note]
+	name_lbl.custom_minimum_size = Vector2(112, 0)
+	name_lbl.add_theme_font_size_override("font_size", 14)
+	if not note.is_empty():
+		name_lbl.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
+	row.add_child(name_lbl)
+
+	var tiles_box := HBoxContainer.new()
+	tiles_box.add_theme_constant_override("separation", 4)
+	tiles_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(tiles_box)
+
+	var total := 0
+	for t in hands[seat]:
+		var tex := TextureRect.new()
+		tex.texture = load(t.texture())
+		tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tex.custom_minimum_size = Vector2(30, 60)
+		tiles_box.add_child(tex)
+		total += t.pips()
+
+	if hands[seat].is_empty():
+		var none_lbl := Label.new()
+		none_lbl.text = "se pegó (sin fichas)"
+		none_lbl.add_theme_font_size_override("font_size", 13)
+		tiles_box.add_child(none_lbl)
+
+	var total_lbl := Label.new()
+	total_lbl.text = "= %d" % total
+	total_lbl.custom_minimum_size = Vector2(48, 0)
+	total_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	total_lbl.add_theme_font_size_override("font_size", 14)
+	row.add_child(total_lbl)
+
+	return row
+
+
+func _on_hand_result_continue() -> void:
+	if pending_winner_team < 0:
+		return
+	var winner_team: int = pending_winner_team
+	pending_winner_team = -1
+	hand_result_overlay.visible = false
 	_after_hand_scoring_check(winner_team)
 
 
+# Se revisan las DOS parejas, no solo la que ganó la mano: las bonificaciones se
+# acreditan durante la mano y pueden llevar a la meta a cualquiera de las dos.
 func _after_hand_scoring_check(winner_team: int) -> void:
-	if team_score[winner_team] >= target_score:
-		_game_over(winner_team)
+	var reached_0: bool = team_score[0] >= target_score
+	var reached_1: bool = team_score[1] >= target_score
+	if reached_0 or reached_1:
+		if reached_0 and reached_1:
+			# Si las dos llegaron, gana la de más puntos; si empatan, la de la mano.
+			if team_score[0] > team_score[1]:
+				_game_over(0)
+			elif team_score[1] > team_score[0]:
+				_game_over(1)
+			else:
+				_game_over(winner_team)
+		elif reached_0:
+			_game_over(0)
+		else:
+			_game_over(1)
 	else:
 		start_new_hand()
 
@@ -723,7 +1184,9 @@ func _render_all() -> void:
 	_render_side_stacks()
 	_render_north_hand_backs()
 	_update_top_bar()
-	_update_pass_button()
+	_update_pass_status()
+	_update_turn_dots()
+	south_title.text = "Tu mano (Sur)%s" % _lead_mark(HUMAN_SEAT)
 
 
 # La ficha inicial (el burro) queda siempre exactamente en el centro del tablero y
@@ -746,15 +1209,24 @@ func _render_board() -> void:
 	for i in range(opening_tile_index - 1, -1, -1):
 		left_chain.append(board[i])
 
-	var placements: Array = []
-	placements.append({"domino": anchor_tile, "offset": Vector2.ZERO, "size": Vector2(64, 128), "rotation": 0.0})
+	# Solo en la primera mano sale forzosamente el 6-6; de la segunda en adelante la
+	# ficha inicial puede ser cualquiera. Si es un doble va cruzada (angosta y alta);
+	# si no, se acuesta como cualquier ficha de la fila, con su valor "a" mirando a la
+	# izquierda y "b" a la derecha (así se fijan las puntas al abrir la mano).
+	var anchor_is_double: bool = anchor_tile.is_double()
+	var anchor_size: Vector2 = Vector2(64, 128) if anchor_is_double else Vector2(128, 64)
+	var anchor_rot: float = 0.0 if anchor_is_double else _dir_angle(Vector2(-1, 0))
+	var chain_start_x: float = anchor_size.x / 2.0
 
-	# anchor_tile es un doble (a == b), así que ese valor es el que debe calzar
-	# con la primera ficha de cada lado. El derecho dobla hacia arriba (-Y);
-	# el izquierdo dobla hacia abajo (+Y).
-	for p in _layout_chain(right_chain, 32.0, 1.0, -1.0, anchor_tile.a):
+	var placements: Array = []
+	placements.append({"domino": anchor_tile, "offset": Vector2.ZERO, "size": anchor_size, "rotation": anchor_rot})
+
+	# Cada lado arranca calzando con la punta que la ficha inicial le expone: la
+	# derecha con "b" y la izquierda con "a". El lado derecho dobla hacia arriba
+	# (-Y); el izquierdo hacia abajo (+Y).
+	for p in _layout_chain(right_chain, chain_start_x, 1.0, -1.0, anchor_tile.b):
 		placements.append(p)
-	for p in _layout_chain(left_chain, -32.0, -1.0, 1.0, anchor_tile.a):
+	for p in _layout_chain(left_chain, -chain_start_x, -1.0, 1.0, anchor_tile.a):
 		placements.append(p)
 
 	var min_x := 0.0
@@ -942,25 +1414,29 @@ func _render_south_hand() -> void:
 		south_hand_row.add_child(btn)
 
 
+# Las tres manos de la IA usan fichas del mismo tamaño (44x88, la misma proporción
+# 1:2 de una ficha real): de pie para Norte, acostadas para los laterales, según
+# cómo las sostendría cada jugador desde su puesto.
 func _render_north_hand_backs() -> void:
+	north_title.text = "Norte (IA) — compañero de Sur — %d fichas%s" % [hands[2].size(), _lead_mark(2)]
 	for c in north_row.get_children():
 		c.queue_free()
 	for i in range(hands[2].size()):
-		north_row.add_child(_make_tile_back(34, 68))
+		north_row.add_child(_make_tile_back(44, 88))
 
 
 func _render_side_stacks() -> void:
-	west_title.text = "Oeste (IA)\n%d fichas" % hands[3].size()
+	west_title.text = "Oeste (IA)\n%d fichas%s" % [hands[3].size(), _lead_mark(3)]
 	for c in west_stack.get_children():
 		c.queue_free()
 	for i in range(hands[3].size()):
-		west_stack.add_child(_make_tile_back(70, 45))
+		west_stack.add_child(_make_tile_back(88, 44))
 
-	east_title.text = "Este (IA)\n%d fichas" % hands[1].size()
+	east_title.text = "Este (IA)\n%d fichas%s" % [hands[1].size(), _lead_mark(1)]
 	for c in east_stack.get_children():
 		c.queue_free()
 	for i in range(hands[1].size()):
-		east_stack.add_child(_make_tile_back(70, 45))
+		east_stack.add_child(_make_tile_back(88, 44))
 
 
 func _update_top_bar() -> void:
@@ -979,17 +1455,15 @@ func _update_top_bar() -> void:
 		lbl_ends.text = "Puntas abiertas: %d  —  %d" % [left_end, right_end]
 
 
-# El pase ahora es automático (ver _proceed_turn) para que el juego nunca se quede
-# esperando un clic que no llega. Este botón es solo un indicador de estado; no se
-# puede pulsar, para evitar pasar dos veces el mismo turno (una manual y otra sola).
-func _update_pass_button() -> void:
-	pass_button.disabled = true
+# El pase es automático (ver _proceed_turn) para que el juego nunca se quede
+# esperando un clic que no llega; esto solo informa el estado del turno.
+func _update_pass_status() -> void:
 	if phase != Phase.PLAYING or current_player != HUMAN_SEAT:
-		pass_button.text = "Pasar"
+		pass_status.text = ""
 	elif _legal_moves_for(HUMAN_SEAT).is_empty():
-		pass_button.text = "Sin fichas jugables: pasando…"
+		pass_status.text = "Sin fichas jugables: pasando…"
 	else:
-		pass_button.text = "Tienes ficha jugable: debes jugarla"
+		pass_status.text = "Tienes ficha jugable: debes jugarla"
 
 
 func _log(msg: String) -> void:
