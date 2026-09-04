@@ -99,7 +99,8 @@ scenes/Main.tscn           El juego (la interfaz se crea por código)
 scenes/Server.tscn         El servidor dedicado
 scripts/Boot.gd            Detección de modo servidor
 scripts/Domino.gd          Clase de ficha: valores, dobles, puntos y su textura
-scripts/Main.gd            Toda la lógica del juego y la interfaz
+scripts/rules/GameState.gd Estado y reglas, sin interfaz (corre igual en el servidor)
+scripts/Main.gd            Interfaz, entrada del usuario y ritmo de los turnos
 scripts/server/ServerMain.gd  Servidor WebSocket
 docker/Dockerfile          Build del servidor dedicado
 DominoTiles/*.png          Las 28 imágenes de fichas (128x256 cada una)
@@ -175,6 +176,25 @@ al menor** (`Domino.texture_path()` construye el nombre):
 
 En la imagen sin girar, la mitad de **arriba** siempre es el valor mayor y la de
 **abajo** el menor. De eso depende el cálculo de rotación al dibujar el tablero.
+
+## Separación de reglas e interfaz
+
+`GameState` guarda todo el estado de la partida y responde las consultas de reglas
+(jugadas legales, puntos por puesto y por pareja, reparto). No conoce nodos, no
+dibuja, no escribe en el registro y no usa `await`. `Main.gd` solo dibuja, atiende
+al usuario y lleva el ritmo de los turnos.
+
+Esa separación es la que va a permitir correr las mismas reglas en el servidor
+dedicado, en vez de reimplementarlas en otro lenguaje y tener dos motores de reglas
+que mantener sincronizados.
+
+El reparto es **determinista por semilla** (`GameState.deal(seed)`): la misma semilla
+da siempre el mismo reparto, así se puede reproducir una mano exacta para depurar, y
+cuando se juegue en red el servidor será la única fuente del azar. No se usa
+`Array.shuffle()` porque toma el generador global y no se puede fijar por semilla.
+
+**Todavía en `Main.gd`, pendiente de mudarse:** las transiciones (jugar, pasar,
+cerrar mano, bonificaciones, tranque). Ese es el siguiente paso del refactor.
 
 ## Cómo se dibuja el tablero
 
