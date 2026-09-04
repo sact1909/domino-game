@@ -48,9 +48,10 @@ var lbl_score1: Label
 var lbl_turn: Label
 var lbl_ends: Label
 
+var north_title: Label
 var north_row: HBoxContainer
 var south_hand_row: HBoxContainer
-var pass_button: Button
+var pass_status: Label
 
 var west_title: Label
 var west_stack: VBoxContainer
@@ -128,27 +129,28 @@ func _build_top_bar() -> void:
 	row.add_child(lbl_turn)
 
 
+# Va en su propia franja, debajo del panel de Norte: antes quedaba detrás de las
+# fichas de Norte y no se leía.
 func _build_ends_label() -> void:
 	lbl_ends = Label.new()
-	lbl_ends.position = Vector2(180, 126)
-	lbl_ends.size = Vector2(920, 16)
+	lbl_ends.position = Vector2(180, 178)
+	lbl_ends.size = Vector2(920, 22)
 	lbl_ends.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl_ends.add_theme_font_size_override("font_size", 13)
+	lbl_ends.add_theme_font_size_override("font_size", 15)
 	add_child(lbl_ends)
 
 
 func _build_north_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(440, 50)
-	panel.size = Vector2(400, 78)
-	panel.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.position = Vector2(440, 54)
+	panel.size = Vector2(400, 120)
+	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
 	add_child(panel)
 
-	var title := Label.new()
-	title.text = "Norte (IA) — compañero de Sur"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 13)
-	panel.add_child(title)
+	north_title = Label.new()
+	north_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	north_title.add_theme_font_size_override("font_size", 14)
+	panel.add_child(north_title)
 
 	north_row = HBoxContainer.new()
 	north_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -158,9 +160,9 @@ func _build_north_panel() -> void:
 
 func _build_south_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(300, 720)
-	panel.size = Vector2(680, 170)
-	panel.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.position = Vector2(300, 668)
+	panel.size = Vector2(680, 225)
+	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
 	add_child(panel)
 
 	var title := Label.new()
@@ -174,28 +176,24 @@ func _build_south_panel() -> void:
 	south_hand_row.add_theme_constant_override("separation", 8)
 	panel.add_child(south_hand_row)
 
-	pass_button = Button.new()
-	pass_button.text = "Pasar"
-	pass_button.disabled = true
-	pass_button.custom_minimum_size = Vector2(280, 36)
-	var pass_center := CenterContainer.new()
-	pass_center.add_child(pass_button)
-	panel.add_child(pass_center)
+	# Solo informa el estado del turno (el pase es automático), así que es una
+	# etiqueta y no un botón deshabilitado.
+	pass_status = Label.new()
+	pass_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pass_status.add_theme_font_size_override("font_size", 14)
+	pass_status.add_theme_color_override("font_color", Color(0.85, 0.88, 0.85))
+	panel.add_child(pass_status)
 
 
+# En los laterales la etiqueta va DEBAJO de la pila de fichas, siguiendo la columna,
+# para que se lea junto a las fichas de ese jugador y no arriba, despegada de ellas.
 func _build_west_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(10, 145)
-	panel.size = Vector2(160, 565)
+	panel.position = Vector2(10, 204)
+	panel.size = Vector2(160, 456)
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	panel.add_theme_constant_override("separation", 10)
+	panel.add_theme_constant_override("separation", 8)
 	add_child(panel)
-
-	west_title = Label.new()
-	west_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	west_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	west_title.add_theme_font_size_override("font_size", 14)
-	panel.add_child(west_title)
 
 	var center := CenterContainer.new()
 	panel.add_child(center)
@@ -205,20 +203,20 @@ func _build_west_panel() -> void:
 	west_stack.add_theme_constant_override("separation", 6)
 	center.add_child(west_stack)
 
+	west_title = Label.new()
+	west_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	west_title.autowrap_mode = TextServer.AUTOWRAP_WORD
+	west_title.add_theme_font_size_override("font_size", 14)
+	panel.add_child(west_title)
+
 
 func _build_east_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(1110, 145)
-	panel.size = Vector2(160, 565)
+	panel.position = Vector2(1110, 204)
+	panel.size = Vector2(160, 456)
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	panel.add_theme_constant_override("separation", 10)
+	panel.add_theme_constant_override("separation", 8)
 	add_child(panel)
-
-	east_title = Label.new()
-	east_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	east_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	east_title.add_theme_font_size_override("font_size", 14)
-	panel.add_child(east_title)
 
 	var center := CenterContainer.new()
 	panel.add_child(center)
@@ -228,19 +226,25 @@ func _build_east_panel() -> void:
 	east_stack.add_theme_constant_override("separation", 6)
 	center.add_child(east_stack)
 
+	east_title = Label.new()
+	east_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	east_title.autowrap_mode = TextServer.AUTOWRAP_WORD
+	east_title.add_theme_font_size_override("font_size", 14)
+	panel.add_child(east_title)
+
 
 func _build_board_area() -> void:
 	board_viewport = Control.new()
-	board_viewport.position = Vector2(180, 145)
-	board_viewport.size = Vector2(920, 565)
+	board_viewport.position = Vector2(180, 204)
+	board_viewport.size = Vector2(920, 456)
 	board_viewport.clip_contents = true
 	add_child(board_viewport)
 
 
 func _build_log_panel() -> void:
 	var panel := PanelContainer.new()
-	panel.position = Vector2(10, 720)
-	panel.size = Vector2(280, 170)
+	panel.position = Vector2(10, 668)
+	panel.size = Vector2(280, 222)
 	add_child(panel)
 
 	var vb := VBoxContainer.new()
@@ -262,7 +266,7 @@ func _build_log_panel() -> void:
 
 func _build_end_choice_popup() -> void:
 	end_choice_popup = PanelContainer.new()
-	end_choice_popup.position = Vector2(390, 150)
+	end_choice_popup.position = Vector2(390, 214)
 	end_choice_popup.size = Vector2(500, 72)
 	end_choice_popup.visible = false
 	add_child(end_choice_popup)
@@ -511,7 +515,7 @@ func _proceed_turn() -> void:
 		return
 	_update_top_bar()
 	_render_south_hand()
-	_update_pass_button()
+	_update_pass_status()
 
 	# Si de verdad no hay ninguna ficha jugable (sea IA o el humano), se pasa solo:
 	# nadie puede quedarse esperando un clic que no llega, y así el tranque (4 pases
@@ -723,7 +727,7 @@ func _render_all() -> void:
 	_render_side_stacks()
 	_render_north_hand_backs()
 	_update_top_bar()
-	_update_pass_button()
+	_update_pass_status()
 
 
 # La ficha inicial (el burro) queda siempre exactamente en el centro del tablero y
@@ -942,11 +946,15 @@ func _render_south_hand() -> void:
 		south_hand_row.add_child(btn)
 
 
+# Las tres manos de la IA usan fichas del mismo tamaño (44x88, la misma proporción
+# 1:2 de una ficha real): de pie para Norte, acostadas para los laterales, según
+# cómo las sostendría cada jugador desde su puesto.
 func _render_north_hand_backs() -> void:
+	north_title.text = "Norte (IA) — compañero de Sur — %d fichas" % hands[2].size()
 	for c in north_row.get_children():
 		c.queue_free()
 	for i in range(hands[2].size()):
-		north_row.add_child(_make_tile_back(34, 68))
+		north_row.add_child(_make_tile_back(44, 88))
 
 
 func _render_side_stacks() -> void:
@@ -954,13 +962,13 @@ func _render_side_stacks() -> void:
 	for c in west_stack.get_children():
 		c.queue_free()
 	for i in range(hands[3].size()):
-		west_stack.add_child(_make_tile_back(70, 45))
+		west_stack.add_child(_make_tile_back(88, 44))
 
 	east_title.text = "Este (IA)\n%d fichas" % hands[1].size()
 	for c in east_stack.get_children():
 		c.queue_free()
 	for i in range(hands[1].size()):
-		east_stack.add_child(_make_tile_back(70, 45))
+		east_stack.add_child(_make_tile_back(88, 44))
 
 
 func _update_top_bar() -> void:
@@ -979,17 +987,15 @@ func _update_top_bar() -> void:
 		lbl_ends.text = "Puntas abiertas: %d  —  %d" % [left_end, right_end]
 
 
-# El pase ahora es automático (ver _proceed_turn) para que el juego nunca se quede
-# esperando un clic que no llega. Este botón es solo un indicador de estado; no se
-# puede pulsar, para evitar pasar dos veces el mismo turno (una manual y otra sola).
-func _update_pass_button() -> void:
-	pass_button.disabled = true
+# El pase es automático (ver _proceed_turn) para que el juego nunca se quede
+# esperando un clic que no llega; esto solo informa el estado del turno.
+func _update_pass_status() -> void:
 	if phase != Phase.PLAYING or current_player != HUMAN_SEAT:
-		pass_button.text = "Pasar"
+		pass_status.text = ""
 	elif _legal_moves_for(HUMAN_SEAT).is_empty():
-		pass_button.text = "Sin fichas jugables: pasando…"
+		pass_status.text = "Sin fichas jugables: pasando…"
 	else:
-		pass_button.text = "Tienes ficha jugable: debes jugarla"
+		pass_status.text = "Tienes ficha jugable: debes jugarla"
 
 
 func _log(msg: String) -> void:
