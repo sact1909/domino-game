@@ -13,8 +13,9 @@ puestos los maneja la IA.
 
 1. Abre Godot y usa **Importar** apuntando a `project.godot`.
 2. Dale **Play** (F5).
-3. En la pantalla inicial elige la meta de puntos (100, 150 o 200) y pulsa
-   **Comenzar partida**.
+3. En la pantalla inicial elige la meta de puntos (100, 150 o 200) y el valor de las
+   tres bonificaciones (pase seguido, capicúa y pase de salida; 30 por defecto cada
+   una). Luego pulsa **Comenzar partida**.
 4. Cuando sea tu turno, las fichas jugables de tu mano se ven en color normal y las
    que no puedes jugar se ven grises. Haz clic en la ficha que quieras jugar.
 5. Si la ficha calza en las dos puntas, aparece un aviso para que elijas en cuál
@@ -67,6 +68,27 @@ cara** entre dos jugadores:
 Los puntos 4 y 5 son **reglas de casa** que la guía deja a criterio de la mesa, así
 que se eligió una convención razonable. Si tu mesa lo hace distinto, se cambian en
 `_resolve_tranque()`.
+
+### Bonificaciones
+
+Se configuran antes de empezar (30 por defecto cada una) y se acreditan al equipo en
+el momento en que se ganan; el resumen de fin de mano las lista aparte de los puntos
+de la mesa.
+
+| Bonificación | Cuándo se gana |
+|---|---|
+| **Pase seguido** | Un jugador pone una ficha que deja sin jugada a los otros **tres** (rivales y compañero), y él sí puede seguir jugando. Es acumulativo: cada vez que lo consigue vuelve a sumar. No es lo mismo que un tranque — en el tranque tampoco puede jugar él. |
+| **Capicúa** | Un jugador se pega con una ficha que calzaba en **las dos puntas**. Solo cuenta con fichas de caras distintas: los dobles no aplican. Se suma sobre los puntos que recoge de la mesa. |
+| **Pase de salida** | Quien sale de la mano deja sin jugada al jugador que le sigue en el turno. Se **anula** si su propio compañero tampoco puede jugar en su primer turno. |
+
+### Indicadores en la mesa
+
+- Una **bolita** junto al nombre de cada puesto se enciende en amarillo cuando es su
+  turno.
+- El puesto que salió en la mano lleva la marca **· salió**, para tener siempre la
+  referencia de quién jugó primero en esa ronda.
+- Un **aviso flotante** aparece y se desvanece cuando alguien pasa el turno o cuando
+  se gana una bonificación.
 
 ## Estructura del proyecto
 
