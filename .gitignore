@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------------------
+# Godot 4
+# ---------------------------------------------------------------------------
+# Carpeta de caché e importaciones que Godot regenera en cada máquina.
+# Los archivos *.import que están junto a cada asset SÍ se versionan: guardan
+# los ajustes de importación y el UID, y si se pierden Godot los regenera con
+# UIDs nuevos y se rompen las referencias.
+.godot/
+
+# Proyecto exportado / builds
+/build/
+/builds/
+/export/
+/exports/
+*.exe
+*.pck
+*.zip
+*.apk
+*.aab
+*.dmg
+*.app
+
+# Los presets de exportación pueden contener rutas locales y claves de firma
+# (keystore, contraseñas). Si en tu caso no guardan nada sensible, puedes
+# quitar esta línea para compartirlos con el equipo.
+export_presets.cfg
+
+# Android (si algún día se agrega el template de exportación)
+/android/
+
+# ---------------------------------------------------------------------------
+# Sistema operativo
+# ---------------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# ---------------------------------------------------------------------------
+# Editores
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
