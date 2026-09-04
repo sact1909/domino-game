@@ -78,7 +78,7 @@ de la mesa.
 | Bonificación | Cuándo se gana |
 |---|---|
 | **Pase seguido** | Un jugador pone una ficha que deja sin jugada a los otros **tres** (rivales y compañero), y él sí puede seguir jugando. Es acumulativo: cada vez que lo consigue vuelve a sumar. No es lo mismo que un tranque — en el tranque tampoco puede jugar él. |
-| **Capicúa** | Un jugador se pega con una ficha que calzaba en **las dos puntas**. Solo cuenta con fichas de caras distintas: los dobles no aplican. Se suma sobre los puntos que recoge de la mesa. |
+| **Capicúa** | Un jugador se pega con una ficha que cierra las dos puntas **usando una cara en cada una**. Con un 6-5 aplica si las puntas son 5 y 6 (en cualquier orden), pero **no** si las dos puntas son 6 o las dos son 5 — ahí cerraría con la misma cara. Los dobles nunca cuentan. Se suma sobre los puntos que recoge de la mesa. |
 | **Pase de salida** | Quien sale de la mano deja sin jugada al jugador que le sigue en el turno. Se **anula** si su propio compañero tampoco puede jugar en su primer turno. |
 
 ### Indicadores en la mesa
@@ -209,6 +209,38 @@ traducción no cambia.
 si no calza. Jugando en local no debería ocurrir nunca, pero es la base de la
 autoridad del servidor: un cliente modificado no podrá inventar una jugada, una
 capicúa ni un turno ajeno.
+
+## Pruebas
+
+Como las reglas son puras, se pueden probar sin abrir la ventana:
+
+```bash
+godot --headless -- --test
+```
+
+Juega cientos de partidas completas eligiendo jugadas legales al azar y, después de
+cada acción, verifica invariantes:
+
+- Las 28 fichas están siempre contabilizadas entre las manos y la mesa, sin
+  repetirse ni perderse.
+- La mesa es una cadena válida: cada ficha calza con la anterior y las puntas
+  guardadas coinciden con las caras libres reales. Es justo lo que el dibujado del
+  tablero da por sentado.
+- El turno avanza exactamente un puesto por acción.
+- Toda mano termina (alguien se pega o hay tranque), con un tope de acciones para
+  detectar un cuelgue.
+- Los marcadores solo suben.
+- Los puntos de la mano son la suma de todas las fichas de la mesa.
+- En un tranque, los dos jugadores comparados son siempre de parejas contrarias, y
+  gana quien tenga menos puntos.
+- La primera mano de la partida abre con el 6-6.
+
+También prueba lo que **no** debe poderse: jugar fuera de turno, pasar teniendo
+jugada, abrir la primera mano sin el 6-6, y pedir una punta donde la ficha no calza.
+Y que un rechazo no altere el estado.
+
+Sale con código 0 si todo pasa y 1 si algo falla, así sirve tal cual en CI. Cuando
+algo falla informa la semilla del reparto, para poder reproducir esa mano exacta.
 
 ## Cómo se dibuja el tablero
 

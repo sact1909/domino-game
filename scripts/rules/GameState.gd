@@ -269,10 +269,12 @@ func apply_play(seat: int, idx: int, end: String) -> Array:
 	var events: Array = []
 	var t: Domino = hands[seat][idx]
 
-	# Capicúa: la ficha calzaba en las DOS puntas y tiene las caras distintas (los
-	# dobles no cuentan). Se comprueba antes de colocarla, con las puntas de ahora.
+	# Capicúa: la ficha cierra las dos puntas usando UNA CARA EN CADA UNA. Con un
+	# 6-5 aplica si las puntas son 5 y 6 (en cualquier orden), pero NO si las dos
+	# puntas son 6 o las dos son 5, porque ahí cerraría con la misma cara. Los
+	# dobles nunca cuentan. Se comprueba antes de colocarla, con las puntas de ahora.
 	last_play_was_capicua = (not was_opening) and (not t.is_double()) \
-		and t.has_value(left_end) and t.has_value(right_end)
+		and ((t.a == left_end and t.b == right_end) or (t.a == right_end and t.b == left_end))
 
 	hands[seat].remove_at(idx)
 

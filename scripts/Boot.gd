@@ -7,19 +7,27 @@ extends Node
 ##   - El binario se exportó con la plantilla "dedicated server" (feature tag).
 ##   - Se pasó "--server" en la línea de comandos.
 ##
-## Para probar el servidor en local, sin exportar nada:
+## Con "--test" corre el arnés de pruebas de las reglas en vez del juego.
+##
+## Para probar en local, sin exportar nada:
 ##   godot --headless -- --server
+##   godot --headless -- --test
 ##
 ## Se usa una escena de arranque (en vez de ramificar dentro del juego) porque el
 ## escenario principal es un ajuste del proyecto, no del preset de exportación: así
-## el mismo binario sirve para las dos cosas.
+## el mismo binario sirve para las tres cosas.
 
 const GAME_SCENE := "res://scenes/Main.tscn"
 const SERVER_SCENE := "res://scenes/Server.tscn"
+const TEST_SCENE := "res://scenes/Test.tscn"
 
 
 func _ready() -> void:
-	var scene: String = SERVER_SCENE if _is_server_mode() else GAME_SCENE
+	var scene: String = GAME_SCENE
+	if _has_flag("--test"):
+		scene = TEST_SCENE
+	elif _is_server_mode():
+		scene = SERVER_SCENE
 	# Se aplaza un frame a propósito: dentro de _ready() el árbol todavía está
 	# ocupado agregando este nodo, y cambiar de escena ahí intenta quitarlo en pleno
 	# proceso — falla con "Parent node is busy adding/removing children" y el cambio
@@ -30,10 +38,12 @@ func _ready() -> void:
 func _is_server_mode() -> bool:
 	if OS.has_feature("dedicated_server"):
 		return true
-	# Los argumentos después de "--" llegan en get_cmdline_user_args(); se revisan
-	# los dos arreglos porque según cómo se invoque el binario cae en uno o en otro.
-	if OS.get_cmdline_user_args().has("--server"):
+	return _has_flag("--server")
+
+
+# Los argumentos después de "--" llegan en get_cmdline_user_args(); se revisan los
+# dos arreglos porque según cómo se invoque el binario caen en uno o en otro.
+func _has_flag(flag: String) -> bool:
+	if OS.get_cmdline_user_args().has(flag):
 		return true
-	if OS.get_cmdline_args().has("--server"):
-		return true
-	return false
+	return OS.get_cmdline_args().has(flag)
