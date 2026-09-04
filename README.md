@@ -100,7 +100,9 @@ scenes/Server.tscn         El servidor dedicado
 scripts/Boot.gd            Detección de modo servidor
 scripts/Domino.gd          Clase de ficha: valores, dobles, puntos y su textura
 scripts/rules/GameState.gd Estado y reglas, sin interfaz (corre igual en el servidor)
-scripts/Main.gd            Interfaz, entrada del usuario y ritmo de los turnos
+scripts/Main.gd            Interfaz: dibuja y manda acciones (no conoce las reglas)
+scripts/net/Transport.gd   Contrato entre la interfaz y quien tiene la autoridad
+scripts/net/LocalTransport.gd  Autoridad en este proceso: reglas, turnos e IA
 scripts/server/ServerMain.gd  Servidor WebSocket
 docker/Dockerfile          Build del servidor dedicado
 DominoTiles/*.png          Las 28 imágenes de fichas (128x256 cada una)
@@ -179,14 +181,18 @@ En la imagen sin girar, la mitad de **arriba** siempre es el valor mayor y la de
 
 ## Separación de reglas e interfaz
 
-`GameState` guarda todo el estado de la partida y responde las consultas de reglas
-(jugadas legales, puntos por puesto y por pareja, reparto). No conoce nodos, no
-dibuja, no escribe en el registro y no usa `await`. `Main.gd` solo dibuja, atiende
-al usuario y lleva el ritmo de los turnos.
+El proyecto está en tres capas y ninguna se mete en la de al lado:
+
+| Capa | Archivo | Qué hace |
+|---|---|---|
+| Reglas | `scripts/rules/GameState.gd` | Estado y reglas. No conoce nodos, no dibuja, no escribe en el registro y no usa `await`. |
+| Autoridad | `scripts/net/LocalTransport.gd` | Reparte, aplica jugadas, lleva el ritmo de los turnos, resuelve el pase forzado, mueve la IA y decide cuándo se acabó la partida. |
+| Interfaz | `scripts/Main.gd` | Dibuja, atiende al usuario y redacta los mensajes. **No conoce `GameState`.** |
 
 Esa separación es la que va a permitir correr las mismas reglas en el servidor
 dedicado, en vez de reimplementarlas en otro lenguaje y tener dos motores de reglas
-que mantener sincronizados.
+que mantener sincronizados: la capa de autoridad es la que se muda, y las otras dos
+quedan como están.
 
 El reparto es **determinista por semilla** (`GameState.deal(seed)`): la misma semilla
 da siempre el mismo reparto, así se puede reproducir una mano exacta para depurar, y
@@ -197,8 +203,8 @@ cuando se juegue en red el servidor será la única fuente del azar. No se usa
 
 `apply_play()` y `apply_pass()` aplican la jugada y devuelven una **lista de eventos**
 que describe lo que pasó (`played`, `passed`, `bonus`, `hand_won`, `tranque`,
-`rejected`…), en vez de escribir en pantalla. `Main.gd` los traduce a texto, avisos y
-pantallas en `_handle_event()`.
+`rejected`…), en vez de escribir en pantalla. Esa lista viaja por el transporte hasta
+`Main.gd`, que la traduce a texto, avisos y pantallas en `_handle_event()`.
 
 Los eventos llevan datos estructurados, no texto: una bonificación viaja como
 `{"kind": "capicua", "seat": 2, "pts": 30}` y el idioma se resuelve en la interfaz.
@@ -230,9 +236,40 @@ La IA también recibe la vista privada de su puesto en vez del estado completo, 
 solo puede usar lo que un jugador de verdad vería. Eso importa para cuando releve a
 alguien que se desconecte.
 
-**Lo que sí accede al estado con autoridad** son las dos otras funciones que hoy
-cumple `Main.gd`, y que pasarán al servidor: aplicar jugadas y decidir un pase
-forzado. Está marcado con comentarios en el código.
+**Nada de la interfaz llega al estado con autoridad.** Repartir, aplicar jugadas,
+decidir un pase forzado y saber si la partida terminó están del otro lado del
+transporte.
+
+### El transporte: la interfaz no sabe quién decide
+
+`Main.gd` no conoce `GameState`. Lo único que tiene es un `Transport`, y ese contrato
+es corto a propósito: es la superficie del protocolo de red, y todo lo que se le
+agregue hay que validarlo del lado del servidor.
+
+| Del servidor al cliente | Del cliente al servidor |
+|---|---|
+| `seat_assigned(seat)` | `begin()` |
+| `snapshot(pub, mine)` | `start_match(config)` |
+| `events(list)` | `request_play(idx, end)` |
+| `hand_started()` | `request_continue()` |
+| `hand_ended(closing, reveal)` | |
+| `match_ended(winner_team)` | |
+
+Dos detalles del contrato que son de seguridad, no de estilo:
+
+- **`request_play()` no lleva puesto.** El cliente no dice en nombre de quién juega;
+  eso lo sabe la autoridad por la conexión. Es lo que impide mandar jugadas por otro.
+- **No existe `request_pass()`.** En el dominó dominicano no se pasa por voluntad, se
+  pasa porque no hay ficha que calce, y eso lo determina la autoridad mirando la
+  mano. El pase nunca es una acción del cliente: llega como evento.
+
+El destape de fin de mano viaja únicamente dentro de `hand_ended`, junto con el
+cierre. La interfaz no lo puede pedir antes porque no tiene a quién pedírselo.
+
+Hoy la implementación es `LocalTransport`, que corre las reglas y la IA en este mismo
+proceso: es la partida contra la máquina de siempre. Cuando entre el transporte de
+red, va a implementar el mismo contrato hablando por un socket y `Main.gd` no se
+toca.
 
 ### Perspectiva: el jugador local siempre abajo
 
@@ -261,8 +298,8 @@ godot -- --seat=2
 ```
 
 Con eso la partida se juega desde Norte: tu mano abajo, tu compañero Sur arriba, y
-Este y Oeste a los lados. En red, ese valor lo asignará el servidor al entrar a la
-sala.
+Este y Oeste a los lados. El argumento es el puesto que se **pide**; el definitivo
+llega siempre en `seat_assigned`, y en red lo decidirá la sala.
 
 ## Pruebas
 
@@ -328,6 +365,10 @@ Esta parte es la que tiene más lógica no obvia, en `_layout_chain()` y
 Sencilla a propósito: entre sus jugadas legales prefiere los dobles y, si no hay,
 la ficha de más puntos, para soltar las pesadas primero. No cuenta pases ni deduce
 qué tiene la pareja.
+
+Vive en `LocalTransport`, del lado de la autoridad, y recibe la vista privada de su
+puesto igual que un jugador humano: por eso podrá correr en el servidor sin cambios
+cuando tenga que relevar a alguien que se desconecte.
 
 Ideas para mejorarla: aprovechar la información de los pases (la guía insiste en que
 "cada pase habla"), llevar cuenta de números muertos, y jugar pensando en la pareja.

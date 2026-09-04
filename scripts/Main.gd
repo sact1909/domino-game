@@ -9,6 +9,11 @@ extends Control
 const SEAT_NAMES := ["Sur", "Este", "Norte", "Oeste"]
 const TEAM_NAMES := ["Sur-Norte", "Este-Oeste"]
 
+# La mesa tiene cuatro puestos. Que sean cuatro es un dato de la PANTALLA, no de las
+# reglas: son los cuatro paneles que se dibujan, uno por lado, y coincide con la
+# cantidad de nombres de arriba.
+const SEAT_COUNT := 4
+
 # Posiciones de la pantalla, siempre vistas desde el jugador local.
 const POS_BOTTOM := 0
 const POS_RIGHT := 1
@@ -26,35 +31,35 @@ enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
 # ---------------------------------------------------------------------------
 # Estado
 # ---------------------------------------------------------------------------
-# Todo el estado del juego y las reglas de consulta viven en GameState, que no sabe
-# nada de interfaz. Este script solo dibuja, atiende al usuario y lleva el ritmo de
-# los turnos. Esa separación es la que permitirá correr las mismas reglas en el
-# servidor dedicado.
-var state := GameState.new()
+# Este script es SOLO cliente: dibuja, atiende al usuario y redacta mensajes. No
+# tiene las reglas ni las puede consultar — no conoce GameState. Todo lo que sabe
+# del juego le llega por el transporte, y todo lo que quiere hacer se lo pide.
+#
+# Hoy el transporte es LocalTransport, que corre las reglas y la IA en este mismo
+# proceso. Cuando el juego sea en red se cambia por uno que hable con el servidor y
+# este archivo no se toca.
+var transport: Transport
 
 # Puesto que juega en ESTA pantalla. Su mano va siempre abajo y los otros tres se
-# acomodan alrededor según su lugar en el orden de turno. Hoy lo elige un argumento
-# de línea de comandos para poder probar; en red lo asignará el servidor al entrar
-# a la sala.
+# acomodan alrededor según su lugar en el orden de turno. NO se elige acá: llega en
+# seat_assigned y se acata. Hoy detrás de eso hay un argumento de línea de comandos;
+# en red será la sala.
 var local_seat: int = 0
 
-# El DIBUJADO lee solo de estas dos vistas, nunca de state directamente: "pub" es
-# lo que cualquiera puede ver y "mine" son las fichas del puesto local. Esa
-# disciplina es la que garantiza que la pantalla no muestre nada que en red no
-# habría llegado desde el servidor.
-#
-# Ojo: este script todavía hace tres papeles a la vez — interfaz, motor local de
-# turnos y anfitrión de la IA. Los dos últimos sí necesitan acceso de autoridad
-# (hoy este proceso ES la autoridad) y pasarán al servidor más adelante.
+# Todo el dibujado sale de estas dos vistas y de nada más: "pub" es lo que ve la mesa
+# entera y "mine" son las fichas del puesto local. Llegan armadas en cada snapshot,
+# así que en pantalla no puede aparecer nada que en red no hubiera venido del
+# servidor.
 var pub: Dictionary = {}
 var mine: Dictionary = {}
 
-# Destape de fin de mano: las cuatro manos, para el resumen de puntos. Solo se pide
-# con la mano ya terminada — antes de eso sería filtrar las fichas de los demás.
+# Destape de fin de mano: las cuatro manos, para el resumen de puntos. Llega solo
+# junto con el cierre de la mano — antes de eso sería filtrar las fichas de los
+# demás.
 var reveal: Dictionary = {}
 
 # "phase" es de la interfaz, no de las reglas: controla qué se puede tocar en
-# pantalla y cuándo se detiene el ciclo de turnos.
+# pantalla. La mueven las señales del transporte, no este script por su cuenta.
 var phase: int = Phase.SETUP
 
 # ---------------------------------------------------------------------------
@@ -111,7 +116,6 @@ var game_over_label: Label
 # Construcción de la interfaz
 # ===========================================================================
 func _ready() -> void:
-	local_seat = _resolve_local_seat()
 	_build_background()
 	_build_top_bar()
 	_build_ends_label()
@@ -126,9 +130,19 @@ func _ready() -> void:
 	_build_hand_result_overlay()
 	_build_game_over_overlay()
 	_build_start_overlay()
-	# Que las vistas nunca queden vacías: cualquier función de dibujado que corra
-	# antes del primer reparto encontraría un diccionario sin claves y fallaría.
-	_refresh_views()
+
+	# El transporte se arma con la interfaz ya construida, porque begin() contesta en
+	# el acto con el puesto y un primer snapshot de mesa vacía, y esos manejadores ya
+	# dibujan.
+	transport = LocalTransport.new(_resolve_local_seat())
+	transport.seat_assigned.connect(_on_seat_assigned)
+	transport.snapshot.connect(_on_snapshot)
+	transport.events.connect(_on_events)
+	transport.hand_started.connect(_on_hand_started)
+	transport.hand_ended.connect(_on_hand_ended)
+	transport.match_ended.connect(_on_match_ended)
+	add_child(transport)
+	transport.begin()
 
 
 func _build_background() -> void:
@@ -436,7 +450,7 @@ func _make_turn_dot() -> Panel:
 # traducir de quién es el turno a dónde se dibuja ese jugador.
 func _update_turn_dots() -> void:
 	var active_pos: int = _screen_pos(pub.current_player)
-	for pos in range(GameState.SEAT_COUNT):
+	for pos in range(SEAT_COUNT):
 		var dot: Panel = turn_dots[pos]
 		if dot == null:
 			continue
@@ -451,7 +465,8 @@ func _update_turn_dots() -> void:
 
 # Puesto local desde la línea de comandos, para poder probar la perspectiva sin
 # tocar código:  godot -- --seat=2
-# En red esto lo reemplazará el asiento que asigne el servidor al entrar a la sala.
+# Es el puesto que se PIDE, no el que queda: el definitivo llega en seat_assigned.
+# En red lo reemplazará el asiento que asigne la sala al entrar.
 func _resolve_local_seat() -> int:
 	for arg in OS.get_cmdline_user_args():
 		var text: String = str(arg)
@@ -459,7 +474,7 @@ func _resolve_local_seat() -> int:
 			var value: String = text.substr(7)
 			if value.is_valid_int():
 				var seat: int = int(value)
-				if seat >= 0 and seat < GameState.SEAT_COUNT:
+				if seat >= 0 and seat < SEAT_COUNT:
 					return seat
 			push_warning("--seat=%s no es un puesto válido (0 a 3); se usa el 0." % value)
 	return 0
@@ -472,11 +487,11 @@ func _resolve_local_seat() -> int:
 # posición de la derecha es siempre quien juega después de uno, y la de arriba es
 # el compañero (los compañeros se sientan enfrentados).
 func _screen_pos(seat: int) -> int:
-	return posmod(seat - local_seat, GameState.SEAT_COUNT)
+	return posmod(seat - local_seat, SEAT_COUNT)
 
 
 func _seat_at(pos: int) -> int:
-	return posmod(local_seat + pos, GameState.SEAT_COUNT)
+	return posmod(local_seat + pos, SEAT_COUNT)
 
 
 func _is_partner(seat: int) -> bool:
@@ -630,9 +645,12 @@ func _build_start_overlay() -> void:
 	bonus_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(bonus_lbl)
 
-	spin_pase_seguido = _add_bonus_field(vb, "Valor del Pase seguido", state.bonus_pase_seguido)
-	spin_capicua = _add_bonus_field(vb, "Valor de la Capicúa", state.bonus_capicua)
-	spin_pase_salida = _add_bonus_field(vb, "Valor del Pase de Salida", state.bonus_pase_salida)
+	# Los valores por defecto salen del protocolo y no de las reglas: es esta
+	# pantalla la que los propone, y después viajan en start_match().
+	var defaults: Dictionary = Transport.default_config()
+	spin_pase_seguido = _add_bonus_field(vb, "Valor del Pase seguido", int(defaults.bonus_pase_seguido))
+	spin_capicua = _add_bonus_field(vb, "Valor de la Capicúa", int(defaults.bonus_capicua))
+	spin_pase_salida = _add_bonus_field(vb, "Valor del Pase de Salida", int(defaults.bonus_pase_salida))
 
 	var rules_lbl := Label.new()
 	rules_lbl.text = "Reglas: dominó doble-seis (28 fichas), 7 fichas por jugador, no existe pozo. Si tienes ficha jugable, debes jugarla: no se puede pasar voluntariamente. En la primera mano sale el 6-6 (el burro)."
@@ -696,16 +714,19 @@ func _on_goal_selected(goal: int) -> void:
 
 
 func _on_start_pressed() -> void:
-	state.target_score = selected_target
-	state.bonus_pase_seguido = int(spin_pase_seguido.value)
-	state.bonus_capicua = int(spin_capicua.value)
-	state.bonus_pase_salida = int(spin_pase_salida.value)
-	state.reset_match()
+	# La configuración se MANDA; no se escribe en las reglas desde acá. En red este
+	# mismo diccionario es el mensaje que sube el anfitrión.
+	var config: Dictionary = {
+		"target_score": selected_target,
+		"bonus_pase_seguido": int(spin_pase_seguido.value),
+		"bonus_capicua": int(spin_capicua.value),
+		"bonus_pase_salida": int(spin_pase_salida.value),
+	}
 	start_overlay.visible = false
 	log_rt.clear()
-	_log("Partida nueva. Meta: %d puntos." % state.target_score)
-	_log("Bonificaciones — pase seguido: %d, capicúa: %d, pase de salida: %d." % [state.bonus_pase_seguido, state.bonus_capicua, state.bonus_pase_salida])
-	start_new_hand()
+	_log("Partida nueva. Meta: %d puntos." % config.target_score)
+	_log("Bonificaciones — pase seguido: %d, capicúa: %d, pase de salida: %d." % [config.bonus_pase_seguido, config.bonus_capicua, config.bonus_pase_salida])
+	transport.start_match(config)
 
 
 func _on_play_again_pressed() -> void:
@@ -714,120 +735,56 @@ func _on_play_again_pressed() -> void:
 
 
 # ===========================================================================
-# Reparto y comienzo de mano
+# Lo que llega del transporte
 # ===========================================================================
-func start_new_hand() -> void:
-	# El reparto es determinista a partir de una semilla. En un jugador la genera
-	# este script; cuando se juegue en red la generará el servidor, que pasa a ser
-	# la única fuente del azar.
-	state.deal(randi())
-	phase = Phase.PLAYING
-	# Se refrescan antes de los mensajes: ya se leen de la vista, no del estado.
-	_refresh_views()
+# Estos seis manejadores son la única entrada de información al cliente. Ninguno
+# decide nada: guardan lo que llegó, lo dibujan y lo redactan.
+func _on_seat_assigned(seat: int) -> void:
+	local_seat = seat
 
+
+# El estado nuevo. Se guarda y se redibuja todo: el dibujado es idempotente, así que
+# no importa cuántos snapshots lleguen ni en qué momento.
+func _on_snapshot(new_pub: Dictionary, new_mine: Dictionary) -> void:
+	pub = new_pub
+	mine = new_mine
+	_render_all()
+
+
+func _on_events(list: Array) -> void:
+	for e in list:
+		_handle_event(e)
+
+
+func _on_hand_started() -> void:
+	phase = Phase.PLAYING
 	if pub.must_open_with_double_six:
 		_log("Se reparten las fichas (7 por jugador, sin pozo). [b]%s[/b] tiene el 6-6 (el burro) y sale." % SEAT_NAMES[pub.current_player])
 	else:
 		_log("Nueva mano. Sale %s." % SEAT_NAMES[pub.current_player])
-
+	# El snapshot del reparto ya llegó, pero con la fase todavía en SETUP o en
+	# HAND_OVER: se redibuja para que la mano propia quede interactiva.
 	_render_all()
-	_proceed_turn()
 
 
-# ===========================================================================
-# Turnos
-# ===========================================================================
-func _proceed_turn() -> void:
-	if phase != Phase.PLAYING:
-		return
-	_refresh_views()
-	_update_top_bar()
-	_render_own_hand()
-	_update_pass_status()
-	_update_turn_dots()
-
-	var seat: int = pub.current_player
-
-	# Si de verdad no hay ninguna ficha jugable (sea IA o el humano), se pasa solo:
-	# nadie puede quedarse esperando un clic que no llega, y así el tranque (4 pases
-	# seguidos) siempre se detecta y se resuelve. La pausa es solo ritmo visual.
-	#
-	# Esto consulta el estado con autoridad, no una vista: decidir un pase forzado
-	# es trabajo del motor, y en red lo hará el servidor. Un cliente no puede saber
-	# si otro tiene jugada, ni debería.
-	if not state.has_legal_move(seat):
-		await get_tree().create_timer(0.9).timeout
-		if phase == Phase.PLAYING:
-			_submit_pass(seat)
-		return
-
-	if seat != local_seat:
-		await get_tree().create_timer(0.9).timeout
-		if phase == Phase.PLAYING:
-			_ai_take_turn(seat)
-
-
-# La IA recibe la vista privada de su puesto, no el estado completo: así solo puede
-# usar lo que un jugador de verdad vería. Cuando releve a alguien que se desconecte,
-# correrá en el servidor con esa misma limitación.
-func _ai_take_turn(seat: int) -> void:
-	var view: Dictionary = state.private_view(seat)
-	var moves: Array = view.legal_moves
-	if moves.is_empty():
-		_submit_pass(seat)
-		return
-
-	var hand: Array = view.tiles
-	var best: Dictionary = moves[0]
-	for m in moves:
-		var t: Domino = hand[m.idx]
-		var bt: Domino = hand[best.idx]
-		if t.is_double() and not bt.is_double():
-			best = m
-		elif t.is_double() == bt.is_double() and t.pips() > bt.pips():
-			best = m
-
-	var chosen_end: String = best.ends[0]
-	if best.ends.size() > 1:
-		chosen_end = best.ends[randi() % best.ends.size()]
-	_submit_play(seat, best.idx, chosen_end)
-
-
-# ===========================================================================
-# Puente entre las reglas y la interfaz
-# ===========================================================================
-# GameState aplica la jugada y devuelve la lista de lo que pasó; acá se traduce a
-# texto, avisos y pantallas. Cuando el juego sea en red, esos mismos eventos
-# llegarán del servidor en vez de calcularse en local, y esta capa no cambia.
-func _submit_play(seat: int, idx: int, end: String) -> void:
-	_consume(state.apply_play(seat, idx, end))
-
-
-func _submit_pass(seat: int) -> void:
-	_consume(state.apply_pass(seat))
-
-
-func _consume(events: Array) -> void:
-	var closing: Dictionary = {}
-	for e in events:
-		_handle_event(e)
-		var kind: String = str(e.get("type", ""))
-		if kind == "hand_won" or kind == "tranque":
-			closing = e
-
-	# La fase se marca antes de redibujar: así la mano del jugador no se dibuja como
+func _on_hand_ended(closing: Dictionary, hand_reveal: Dictionary) -> void:
+	# La fase se marca antes de redibujar: así la mano propia no queda dibujada como
 	# interactiva en el mismo cuadro en que la mano ya terminó.
-	if not closing.is_empty():
-		phase = Phase.HAND_OVER
-
+	phase = Phase.HAND_OVER
+	reveal = hand_reveal
 	_render_all()
-
-	if not closing.is_empty():
-		_show_hand_result_for(closing)
-	elif not state.hand_over:
-		_proceed_turn()
+	_show_hand_result_for(closing)
 
 
+func _on_match_ended(winner_team: int) -> void:
+	phase = Phase.GAME_OVER
+	game_over_label.text = "¡Equipo %s gana la partida!\nPuntaje final: %d - %d" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]]
+	game_over_overlay.visible = true
+	_log("[b]Fin de la partida. Gana el equipo %s (%d - %d).[/b]" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]])
+
+
+# Traduce un evento a lo que se lee en pantalla. Acá vive el idioma; las reglas ya
+# quedaron resueltas del otro lado.
 func _handle_event(e: Dictionary) -> void:
 	match str(e.get("type", "")):
 		"played":
@@ -868,12 +825,10 @@ func _bonus_text(e: Dictionary) -> String:
 # Fin de mano y puntuación
 # ===========================================================================
 # Arma la pantalla de fin de mano a partir del evento de cierre. Las reglas y los
-# puntos ya los resolvió GameState; acá solo se redacta lo que se lee en pantalla.
+# puntos ya los resolvió la autoridad; acá solo se redacta lo que se lee en pantalla.
 func _show_hand_result_for(e: Dictionary) -> void:
-	# Recién acá se pide el destape, con la mano ya cerrada: es el único momento en
-	# que corresponde ver las fichas de los demás.
-	reveal = state.reveal_view()
-
+	# "reveal" ya viene puesto por _on_hand_ended: el destape llega junto con el
+	# cierre de la mano, que es el único momento en que corresponde verlo.
 	if str(e.get("type", "")) == "hand_won":
 		var subtitle: String = "%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % SEAT_NAMES[e.winner_seat]
 		if e.capicua:
@@ -981,7 +936,7 @@ func _make_team_summary(team: int, total: int, header: String, notes: Dictionary
 	box.add_child(head)
 
 	for s in range(4):
-		if GameState.TEAM_OF_SEAT[s] == team:
+		if _team_of(s) == team:
 			box.add_child(_make_seat_summary_row(s, notes.get(s, "")))
 
 	var total_lbl := Label.new()
@@ -1042,23 +997,11 @@ func _make_seat_summary_row(seat: int, note: String) -> HBoxContainer:
 func _on_hand_result_continue() -> void:
 	if pending_winner_team < 0:
 		return
-	var winner_team: int = pending_winner_team
 	pending_winner_team = -1
 	hand_result_overlay.visible = false
-
-	# winning_team() revisa las dos parejas y devuelve -1 si nadie llegó a la meta.
-	var champion: int = state.winning_team(winner_team)
-	if champion >= 0:
-		_game_over(champion)
-	else:
-		start_new_hand()
-
-
-func _game_over(winner_team: int) -> void:
-	phase = Phase.GAME_OVER
-	game_over_label.text = "¡Equipo %s gana la partida!\nPuntaje final: %d - %d" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]]
-	game_over_overlay.visible = true
-	_log("[b]Fin de la partida. Gana el equipo %s (%d - %d).[/b]" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]])
+	# Si alguna pareja llegó a la meta lo decide la autoridad, no la pantalla: acá
+	# solo se pide seguir, y lo que vuelve es una mano nueva o el fin de la partida.
+	transport.request_continue()
 
 
 # ===========================================================================
@@ -1077,7 +1020,7 @@ func _on_hand_tile_pressed(idx: int) -> void:
 		return
 	if pub.board.is_empty() or chosen.ends.size() == 1:
 		var e: String = chosen.ends[0]
-		_submit_play(local_seat, idx, e)
+		transport.request_play(idx, e)
 	else:
 		_show_end_choice_popup(idx)
 
@@ -1097,21 +1040,21 @@ func _on_end_choice(end: String) -> void:
 		return
 	var idx := pending_hand_idx
 	pending_hand_idx = -1
-	_submit_play(local_seat, idx, end)
+	transport.request_play(idx, end)
 
 
 # ===========================================================================
 # Renderizado
 # ===========================================================================
-# Único punto donde el dibujado toma datos del estado. De acá en adelante todo lee
-# de "pub" y "mine".
-func _refresh_views() -> void:
-	pub = state.public_view()
-	mine = state.private_view(local_seat)
+# Las parejas son los puestos enfrentados. No hace falta importar las reglas para
+# saberlo: es lo mismo que ya dicen TEAM_NAMES ("Sur-Norte" son los pares,
+# "Este-Oeste" los impares) y lo mismo que se ve en la mesa, donde tu pareja queda
+# siempre al frente.
+func _team_of(seat: int) -> int:
+	return seat % 2
 
 
 func _render_all() -> void:
-	_refresh_views()
 	_render_board()
 	_render_own_hand()
 	_render_side_stacks()
@@ -1391,7 +1334,7 @@ func _update_top_bar() -> void:
 		lbl_ends.text = "Puntas abiertas: %d  —  %d" % [pub.left_end, pub.right_end]
 
 
-# El pase es automático (ver _proceed_turn) para que el juego nunca se quede
+# El pase es automático (lo aplica la autoridad) para que el juego nunca se quede
 # esperando un clic que no llega; esto solo informa el estado del turno.
 func _update_pass_status() -> void:
 	if phase != Phase.PLAYING or pub.current_player != local_seat:
