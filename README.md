@@ -19,6 +19,9 @@ puestos los maneja la IA.
    que no puedes jugar se ven grises. Haz clic en la ficha que quieras jugar.
 5. Si la ficha calza en las dos puntas, aparece un aviso para que elijas en cuál
    jugarla (izquierda o derecha).
+6. Al terminar cada mano aparece una pantalla con el resultado: quién ganó, las
+   fichas que se cuentan (con los puntos de cada jugador y el total de la pareja) y
+   el marcador. La partida sigue cuando pulsas **Continuar**.
 
 > Si cambias el código con el juego abierto, detén la ejecución (**Stop**) y dale
 > **Play** de nuevo: Godot no siempre aplica cambios de GDScript a una escena que ya

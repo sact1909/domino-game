@@ -69,6 +69,12 @@ var target_option_buttons: Array = []
 var end_choice_popup: PanelContainer
 var pending_hand_idx: int = -1
 
+# Pantalla de fin de mano: se queda esperando el botón "Continuar" en vez de seguir
+# sola, para que se pueda revisar de dónde salieron los puntos.
+var hand_result_overlay: Control
+var hand_result_content: VBoxContainer
+var pending_winner_team: int = -1
+
 var game_over_overlay: Control
 var game_over_label: Label
 
@@ -87,6 +93,7 @@ func _ready() -> void:
 	_build_board_area()
 	_build_log_panel()
 	_build_end_choice_popup()
+	_build_hand_result_overlay()
 	_build_game_over_overlay()
 	_build_start_overlay()
 
@@ -295,6 +302,41 @@ func _build_end_choice_popup() -> void:
 	right_btn.text = "Derecha"
 	right_btn.pressed.connect(func(): _on_end_choice("R"))
 	row.add_child(right_btn)
+
+
+func _build_hand_result_overlay() -> void:
+	hand_result_overlay = ColorRect.new()
+	hand_result_overlay.color = Color(0, 0, 0, 0.7)
+	hand_result_overlay.position = Vector2.ZERO
+	hand_result_overlay.size = Vector2(1280, 900)
+	hand_result_overlay.visible = false
+	add_child(hand_result_overlay)
+
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	hand_result_overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(560, 0)
+	center.add_child(panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 14)
+	panel.add_child(vb)
+
+	# El contenido se arma de nuevo en cada mano (las fichas cambian); el botón se
+	# queda fijo, así su señal se conecta una sola vez.
+	hand_result_content = VBoxContainer.new()
+	hand_result_content.add_theme_constant_override("separation", 10)
+	vb.add_child(hand_result_content)
+
+	var continue_btn := Button.new()
+	continue_btn.text = "Continuar"
+	continue_btn.custom_minimum_size = Vector2(200, 42)
+	continue_btn.pressed.connect(_on_hand_result_continue)
+	var btn_center := CenterContainer.new()
+	btn_center.add_child(continue_btn)
+	vb.add_child(btn_center)
 
 
 func _build_game_over_overlay() -> void:
@@ -604,31 +646,37 @@ func _check_hand_end(seat: int) -> void:
 # ===========================================================================
 # Fin de mano y puntuación
 # ===========================================================================
+func _team_pip_totals() -> Array:
+	var totals := [0, 0]
+	for s in range(4):
+		for t in hands[s]:
+			totals[TEAM_OF_SEAT[s]] += t.pips()
+	return totals
+
+
 func _hand_won_by_domino(winner_seat: int) -> void:
 	phase = Phase.HAND_OVER
 	var winner_team: int = TEAM_OF_SEAT[winner_seat]
 	var loser_team: int = 1 - winner_team
-	var pts := 0
-	for s in range(4):
-		if TEAM_OF_SEAT[s] == loser_team:
-			for t in hands[s]:
-				pts += t.pips()
+	var totals: Array = _team_pip_totals()
+	var pts: int = totals[loser_team]
 	team_score[winner_team] += pts
 	_log("[b]%s[/b] colocó su última ficha. ¡Equipo %s gana la mano! (+%d puntos)" % [SEAT_NAMES[winner_seat], TEAM_NAMES[winner_team], pts])
 	lead_player = winner_seat
 	_render_all()
-	await get_tree().create_timer(2.2).timeout
-	_after_hand_scoring_check(winner_team)
+	_show_hand_result(
+		"¡Equipo %s gana la mano!" % TEAM_NAMES[winner_team],
+		"%s colocó su última ficha. Se cuentan las fichas que le quedaron a la pareja contraria." % SEAT_NAMES[winner_seat],
+		false,
+		winner_team,
+		totals,
+		pts
+	)
 
 
 func _resolve_tranque() -> void:
 	phase = Phase.HAND_OVER
-	var team_pips := [0, 0]
-	for s in range(4):
-		var total := 0
-		for t in hands[s]:
-			total += t.pips()
-		team_pips[TEAM_OF_SEAT[s]] += total
+	var team_pips: Array = _team_pip_totals()
 
 	var winner_team: int
 	if team_pips[0] < team_pips[1]:
@@ -642,9 +690,12 @@ func _resolve_tranque() -> void:
 	var pts: int = team_pips[loser_team]
 	team_score[winner_team] += pts
 
+	var subtitle: String
 	if team_pips[0] == team_pips[1]:
+		subtitle = "Empate en puntos (%d - %d): gana el equipo %s por tener la mano." % [team_pips[0], team_pips[1], TEAM_NAMES[winner_team]]
 		_log("¡Tranque! Empate en puntos (%d - %d). Gana el equipo %s por tener la mano. (+%d puntos)" % [team_pips[0], team_pips[1], TEAM_NAMES[winner_team], pts])
 	else:
+		subtitle = "Nadie podía jugar. Gana la pareja con menos puntos: %d contra %d." % [team_pips[winner_team], team_pips[loser_team]]
 		_log("¡Tranque! Equipo %s gana con menos puntos (%d contra %d). (+%d puntos)" % [TEAM_NAMES[winner_team], team_pips[winner_team], team_pips[loser_team], pts])
 
 	# Dentro del equipo ganador, sale en la próxima mano quien se quedó con menos puntos en la mano.
@@ -661,7 +712,129 @@ func _resolve_tranque() -> void:
 	lead_player = best_seat
 
 	_render_all()
-	await get_tree().create_timer(2.6).timeout
+	_show_hand_result("¡Tranque!", subtitle, true, winner_team, team_pips, pts)
+
+
+# ===========================================================================
+# Pantalla de fin de mano
+# ===========================================================================
+# En un tranque se muestran las fichas de las DOS parejas (porque se comparan); si
+# alguien se pegó, solo las de la pareja contraria (son las que se cuentan).
+func _show_hand_result(title: String, subtitle: String, is_tranque: bool, winner_team: int, team_pips: Array, pts: int) -> void:
+	pending_winner_team = winner_team
+
+	for c in hand_result_content.get_children():
+		hand_result_content.remove_child(c)
+		c.queue_free()
+
+	var title_lbl := Label.new()
+	title_lbl.text = title
+	title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title_lbl.add_theme_font_size_override("font_size", 26)
+	hand_result_content.add_child(title_lbl)
+
+	var sub_lbl := Label.new()
+	sub_lbl.text = subtitle
+	sub_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
+	sub_lbl.custom_minimum_size = Vector2(520, 0)
+	sub_lbl.add_theme_font_size_override("font_size", 14)
+	hand_result_content.add_child(sub_lbl)
+
+	if is_tranque:
+		for team in [0, 1]:
+			var mark: String = " ← menos puntos" if team == winner_team and team_pips[0] != team_pips[1] else ""
+			hand_result_content.add_child(_make_team_summary(team, team_pips[team], "Equipo %s%s" % [TEAM_NAMES[team], mark]))
+	else:
+		var loser_team: int = 1 - winner_team
+		hand_result_content.add_child(_make_team_summary(loser_team, team_pips[loser_team], "Fichas que se cuentan — equipo %s" % TEAM_NAMES[loser_team]))
+
+	var pts_lbl := Label.new()
+	pts_lbl.text = "Equipo %s suma %d puntos" % [TEAM_NAMES[winner_team], pts]
+	pts_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pts_lbl.add_theme_font_size_override("font_size", 20)
+	pts_lbl.add_theme_color_override("font_color", Color(0.6, 1, 0.6))
+	hand_result_content.add_child(pts_lbl)
+
+	var score_lbl := Label.new()
+	score_lbl.text = "Marcador: %s %d  —  %s %d      (meta: %d)" % [TEAM_NAMES[0], team_score[0], TEAM_NAMES[1], team_score[1], target_score]
+	score_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	score_lbl.add_theme_font_size_override("font_size", 15)
+	hand_result_content.add_child(score_lbl)
+
+	hand_result_overlay.visible = true
+
+
+func _make_team_summary(team: int, total: int, header: String) -> VBoxContainer:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+
+	var head := Label.new()
+	head.text = header
+	head.add_theme_font_size_override("font_size", 15)
+	head.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
+	box.add_child(head)
+
+	for s in range(4):
+		if TEAM_OF_SEAT[s] == team:
+			box.add_child(_make_seat_summary_row(s))
+
+	var total_lbl := Label.new()
+	total_lbl.text = "Total del equipo: %d" % total
+	total_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	total_lbl.add_theme_font_size_override("font_size", 15)
+	box.add_child(total_lbl)
+
+	return box
+
+
+func _make_seat_summary_row(seat: int) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var name_lbl := Label.new()
+	name_lbl.text = "%s:" % SEAT_NAMES[seat]
+	name_lbl.custom_minimum_size = Vector2(66, 0)
+	name_lbl.add_theme_font_size_override("font_size", 14)
+	row.add_child(name_lbl)
+
+	var tiles_box := HBoxContainer.new()
+	tiles_box.add_theme_constant_override("separation", 4)
+	tiles_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(tiles_box)
+
+	var total := 0
+	for t in hands[seat]:
+		var tex := TextureRect.new()
+		tex.texture = load(t.texture())
+		tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tex.custom_minimum_size = Vector2(30, 60)
+		tiles_box.add_child(tex)
+		total += t.pips()
+
+	if hands[seat].is_empty():
+		var none_lbl := Label.new()
+		none_lbl.text = "se pegó (sin fichas)"
+		none_lbl.add_theme_font_size_override("font_size", 13)
+		tiles_box.add_child(none_lbl)
+
+	var total_lbl := Label.new()
+	total_lbl.text = "= %d" % total
+	total_lbl.custom_minimum_size = Vector2(48, 0)
+	total_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	total_lbl.add_theme_font_size_override("font_size", 14)
+	row.add_child(total_lbl)
+
+	return row
+
+
+func _on_hand_result_continue() -> void:
+	if pending_winner_team < 0:
+		return
+	var winner_team: int = pending_winner_team
+	pending_winner_team = -1
+	hand_result_overlay.visible = false
 	_after_hand_scoring_check(winner_team)
 
 
@@ -750,15 +923,24 @@ func _render_board() -> void:
 	for i in range(opening_tile_index - 1, -1, -1):
 		left_chain.append(board[i])
 
-	var placements: Array = []
-	placements.append({"domino": anchor_tile, "offset": Vector2.ZERO, "size": Vector2(64, 128), "rotation": 0.0})
+	# Solo en la primera mano sale forzosamente el 6-6; de la segunda en adelante la
+	# ficha inicial puede ser cualquiera. Si es un doble va cruzada (angosta y alta);
+	# si no, se acuesta como cualquier ficha de la fila, con su valor "a" mirando a la
+	# izquierda y "b" a la derecha (así se fijan las puntas al abrir la mano).
+	var anchor_is_double: bool = anchor_tile.is_double()
+	var anchor_size: Vector2 = Vector2(64, 128) if anchor_is_double else Vector2(128, 64)
+	var anchor_rot: float = 0.0 if anchor_is_double else _dir_angle(Vector2(-1, 0))
+	var chain_start_x: float = anchor_size.x / 2.0
 
-	# anchor_tile es un doble (a == b), así que ese valor es el que debe calzar
-	# con la primera ficha de cada lado. El derecho dobla hacia arriba (-Y);
-	# el izquierdo dobla hacia abajo (+Y).
-	for p in _layout_chain(right_chain, 32.0, 1.0, -1.0, anchor_tile.a):
+	var placements: Array = []
+	placements.append({"domino": anchor_tile, "offset": Vector2.ZERO, "size": anchor_size, "rotation": anchor_rot})
+
+	# Cada lado arranca calzando con la punta que la ficha inicial le expone: la
+	# derecha con "b" y la izquierda con "a". El lado derecho dobla hacia arriba
+	# (-Y); el izquierdo hacia abajo (+Y).
+	for p in _layout_chain(right_chain, chain_start_x, 1.0, -1.0, anchor_tile.b):
 		placements.append(p)
-	for p in _layout_chain(left_chain, -32.0, -1.0, 1.0, anchor_tile.a):
+	for p in _layout_chain(left_chain, -chain_start_x, -1.0, 1.0, anchor_tile.a):
 		placements.append(p)
 
 	var min_x := 0.0
