@@ -234,6 +234,36 @@ alguien que se desconecte.
 cumple `Main.gd`, y que pasarán al servidor: aplicar jugadas y decidir un pase
 forzado. Está marcado con comentarios en el código.
 
+### Perspectiva: el jugador local siempre abajo
+
+Los nombres de brújula son la **identidad** del puesto, no su lugar en pantalla: el
+asiento 0 es Sur siempre, aunque quien esté jugando sea Norte. Lo que cambia es
+desde dónde se mira la mesa.
+
+`local_seat` dice qué puesto juega en esta pantalla, y su mano va siempre abajo. Los
+otros tres se acomodan con `_screen_pos(seat) = (seat - local_seat) mod 4`:
+
+| Posición | Quién es |
+|---|---|
+| Abajo | uno mismo |
+| Derecha | quien juega justo después |
+| Arriba | el compañero (se sientan enfrentados) |
+| Izquierda | quien juega justo antes |
+
+Sale de que el orden de turno es `0 → 1 → 2 → 3`, así que la posición 2 es siempre
+la pareja. Los nodos de los paneles se llaman por posición (`top_`, `own_`, `left_`,
+`right_`), no por brújula, y las bolitas de turno están indexadas por posición.
+
+Para probarlo sin red, se puede elegir el puesto por línea de comandos:
+
+```bash
+godot -- --seat=2
+```
+
+Con eso la partida se juega desde Norte: tu mano abajo, tu compañero Sur arriba, y
+Este y Oeste a los lados. En red, ese valor lo asignará el servidor al entrar a la
+sala.
+
 ## Pruebas
 
 Como las reglas son puras, se pueden probar sin abrir la ventana:

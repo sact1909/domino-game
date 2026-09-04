@@ -3,11 +3,17 @@ extends Control
 # ---------------------------------------------------------------------------
 # Constantes de la mesa
 # ---------------------------------------------------------------------------
-# Orden de asientos = orden de turno en sentido contrario a las agujas del reloj:
-# Sur (humano, abajo) -> Este (derecha) -> Norte (arriba) -> Oeste (izquierda) -> Sur...
-const HUMAN_SEAT := 0
+# Los nombres son la IDENTIDAD del puesto, no su lugar en pantalla: el asiento 0 es
+# Sur siempre, aunque quien juegue en esta pantalla sea Norte. El orden de turno va
+# en sentido contrario a las agujas del reloj: 0 -> 1 -> 2 -> 3 -> 0.
 const SEAT_NAMES := ["Sur", "Este", "Norte", "Oeste"]
 const TEAM_NAMES := ["Sur-Norte", "Este-Oeste"]
+
+# Posiciones de la pantalla, siempre vistas desde el jugador local.
+const POS_BOTTOM := 0
+const POS_RIGHT := 1
+const POS_TOP := 2
+const POS_LEFT := 3
 
 # Cada lado de la hilera avanza en fila (máx. 5 fichas seguidas); al llegar a esa
 # cantidad, dobla UNA sola vez en toda la partida (el lado derecho hacia arriba, el
@@ -25,6 +31,12 @@ enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
 # los turnos. Esa separación es la que permitirá correr las mismas reglas en el
 # servidor dedicado.
 var state := GameState.new()
+
+# Puesto que juega en ESTA pantalla. Su mano va siempre abajo y los otros tres se
+# acomodan alrededor según su lugar en el orden de turno. Hoy lo elige un argumento
+# de línea de comandos para poder probar; en red lo asignará el servidor al entrar
+# a la sala.
+var local_seat: int = 0
 
 # El DIBUJADO lee solo de estas dos vistas, nunca de state directamente: "pub" es
 # lo que cualquiera puede ver y "mine" son las fichas del puesto local. Esa
@@ -54,15 +66,15 @@ var lbl_score1: Label
 var lbl_turn: Label
 var lbl_ends: Label
 
-var north_title: Label
-var north_row: HBoxContainer
-var south_hand_row: HBoxContainer
+var top_title: Label
+var top_row: HBoxContainer
+var own_hand_row: HBoxContainer
 var pass_status: Label
 
-var west_title: Label
-var west_stack: VBoxContainer
-var east_title: Label
-var east_stack: VBoxContainer
+var left_title: Label
+var left_stack: VBoxContainer
+var right_title: Label
+var right_stack: VBoxContainer
 
 var board_viewport: Control
 
@@ -83,7 +95,7 @@ var toast_panel: PanelContainer
 var toast_label: Label
 var toast_tween: Tween
 var turn_dots: Array = [null, null, null, null]
-var south_title: Label
+var own_title: Label
 
 # Pantalla de fin de mano: se queda esperando el botón "Continuar" en vez de seguir
 # sola, para que se pueda revisar de dónde salieron los puntos.
@@ -99,13 +111,14 @@ var game_over_label: Label
 # Construcción de la interfaz
 # ===========================================================================
 func _ready() -> void:
+	local_seat = _resolve_local_seat()
 	_build_background()
 	_build_top_bar()
 	_build_ends_label()
-	_build_north_panel()
-	_build_south_panel()
-	_build_west_panel()
-	_build_east_panel()
+	_build_top_panel()
+	_build_own_panel()
+	_build_left_panel()
+	_build_right_panel()
 	_build_board_area()
 	_build_log_panel()
 	_build_end_choice_popup()
@@ -167,7 +180,7 @@ func _build_ends_label() -> void:
 	add_child(lbl_ends)
 
 
-func _build_north_panel() -> void:
+func _build_top_panel() -> void:
 	var panel := VBoxContainer.new()
 	panel.position = Vector2(440, 54)
 	panel.size = Vector2(400, 120)
@@ -179,20 +192,20 @@ func _build_north_panel() -> void:
 	title_row.add_theme_constant_override("separation", 8)
 	panel.add_child(title_row)
 
-	turn_dots[2] = _make_turn_dot()
-	title_row.add_child(turn_dots[2])
+	turn_dots[POS_TOP] = _make_turn_dot()
+	title_row.add_child(turn_dots[POS_TOP])
 
-	north_title = Label.new()
-	north_title.add_theme_font_size_override("font_size", 14)
-	title_row.add_child(north_title)
+	top_title = Label.new()
+	top_title.add_theme_font_size_override("font_size", 14)
+	title_row.add_child(top_title)
 
-	north_row = HBoxContainer.new()
-	north_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	north_row.add_theme_constant_override("separation", 3)
-	panel.add_child(north_row)
+	top_row = HBoxContainer.new()
+	top_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	top_row.add_theme_constant_override("separation", 3)
+	panel.add_child(top_row)
 
 
-func _build_south_panel() -> void:
+func _build_own_panel() -> void:
 	var panel := VBoxContainer.new()
 	panel.position = Vector2(300, 668)
 	panel.size = Vector2(680, 225)
@@ -204,18 +217,18 @@ func _build_south_panel() -> void:
 	title_row.add_theme_constant_override("separation", 8)
 	panel.add_child(title_row)
 
-	turn_dots[0] = _make_turn_dot()
-	title_row.add_child(turn_dots[0])
+	turn_dots[POS_BOTTOM] = _make_turn_dot()
+	title_row.add_child(turn_dots[POS_BOTTOM])
 
-	south_title = Label.new()
-	south_title.text = "Tu mano (Sur)"
-	south_title.add_theme_font_size_override("font_size", 16)
-	title_row.add_child(south_title)
+	own_title = Label.new()
+	own_title.text = "Tu mano"
+	own_title.add_theme_font_size_override("font_size", 16)
+	title_row.add_child(own_title)
 
-	south_hand_row = HBoxContainer.new()
-	south_hand_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	south_hand_row.add_theme_constant_override("separation", 8)
-	panel.add_child(south_hand_row)
+	own_hand_row = HBoxContainer.new()
+	own_hand_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	own_hand_row.add_theme_constant_override("separation", 8)
+	panel.add_child(own_hand_row)
 
 	# Solo informa el estado del turno (el pase es automático), así que es una
 	# etiqueta y no un botón deshabilitado.
@@ -228,7 +241,7 @@ func _build_south_panel() -> void:
 
 # En los laterales la etiqueta va DEBAJO de la pila de fichas, siguiendo la columna,
 # para que se lea junto a las fichas de ese jugador y no arriba, despegada de ellas.
-func _build_west_panel() -> void:
+func _build_left_panel() -> void:
 	var panel := VBoxContainer.new()
 	panel.position = Vector2(10, 204)
 	panel.size = Vector2(160, 456)
@@ -239,27 +252,27 @@ func _build_west_panel() -> void:
 	var center := CenterContainer.new()
 	panel.add_child(center)
 
-	west_stack = VBoxContainer.new()
-	west_stack.alignment = BoxContainer.ALIGNMENT_BEGIN
-	west_stack.add_theme_constant_override("separation", 6)
-	center.add_child(west_stack)
+	left_stack = VBoxContainer.new()
+	left_stack.alignment = BoxContainer.ALIGNMENT_BEGIN
+	left_stack.add_theme_constant_override("separation", 6)
+	center.add_child(left_stack)
 
 	var title_row := HBoxContainer.new()
 	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	title_row.add_theme_constant_override("separation", 6)
 	panel.add_child(title_row)
 
-	turn_dots[3] = _make_turn_dot()
-	title_row.add_child(turn_dots[3])
+	turn_dots[POS_LEFT] = _make_turn_dot()
+	title_row.add_child(turn_dots[POS_LEFT])
 
-	west_title = Label.new()
-	west_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	west_title.custom_minimum_size = Vector2(110, 0)
-	west_title.add_theme_font_size_override("font_size", 14)
-	title_row.add_child(west_title)
+	left_title = Label.new()
+	left_title.autowrap_mode = TextServer.AUTOWRAP_WORD
+	left_title.custom_minimum_size = Vector2(110, 0)
+	left_title.add_theme_font_size_override("font_size", 14)
+	title_row.add_child(left_title)
 
 
-func _build_east_panel() -> void:
+func _build_right_panel() -> void:
 	var panel := VBoxContainer.new()
 	panel.position = Vector2(1110, 204)
 	panel.size = Vector2(160, 456)
@@ -270,24 +283,24 @@ func _build_east_panel() -> void:
 	var center := CenterContainer.new()
 	panel.add_child(center)
 
-	east_stack = VBoxContainer.new()
-	east_stack.alignment = BoxContainer.ALIGNMENT_BEGIN
-	east_stack.add_theme_constant_override("separation", 6)
-	center.add_child(east_stack)
+	right_stack = VBoxContainer.new()
+	right_stack.alignment = BoxContainer.ALIGNMENT_BEGIN
+	right_stack.add_theme_constant_override("separation", 6)
+	center.add_child(right_stack)
 
 	var title_row := HBoxContainer.new()
 	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	title_row.add_theme_constant_override("separation", 6)
 	panel.add_child(title_row)
 
-	turn_dots[1] = _make_turn_dot()
-	title_row.add_child(turn_dots[1])
+	turn_dots[POS_RIGHT] = _make_turn_dot()
+	title_row.add_child(turn_dots[POS_RIGHT])
 
-	east_title = Label.new()
-	east_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	east_title.custom_minimum_size = Vector2(110, 0)
-	east_title.add_theme_font_size_override("font_size", 14)
-	title_row.add_child(east_title)
+	right_title = Label.new()
+	right_title.autowrap_mode = TextServer.AUTOWRAP_WORD
+	right_title.custom_minimum_size = Vector2(110, 0)
+	right_title.add_theme_font_size_override("font_size", 14)
+	title_row.add_child(right_title)
 
 
 func _build_board_area() -> void:
@@ -419,18 +432,65 @@ func _make_turn_dot() -> Panel:
 
 
 # Prende la bolita del puesto en turno y apaga las demás.
+# Las bolitas están indexadas por LUGAR EN LA PANTALLA, no por puesto: hay que
+# traducir de quién es el turno a dónde se dibuja ese jugador.
 func _update_turn_dots() -> void:
-	for seat in range(4):
-		var dot: Panel = turn_dots[seat]
+	var active_pos: int = _screen_pos(pub.current_player)
+	for pos in range(GameState.SEAT_COUNT):
+		var dot: Panel = turn_dots[pos]
 		if dot == null:
 			continue
 		var sb := StyleBoxFlat.new()
 		sb.set_corner_radius_all(8)
-		if phase == Phase.PLAYING and seat == pub.current_player:
+		if phase == Phase.PLAYING and pos == active_pos:
 			sb.bg_color = Color(1, 0.85, 0.25)
 		else:
 			sb.bg_color = Color(0.25, 0.32, 0.26)
 		dot.add_theme_stylebox_override("panel", sb)
+
+
+# Puesto local desde la línea de comandos, para poder probar la perspectiva sin
+# tocar código:  godot -- --seat=2
+# En red esto lo reemplazará el asiento que asigne el servidor al entrar a la sala.
+func _resolve_local_seat() -> int:
+	for arg in OS.get_cmdline_user_args():
+		var text: String = str(arg)
+		if text.begins_with("--seat="):
+			var value: String = text.substr(7)
+			if value.is_valid_int():
+				var seat: int = int(value)
+				if seat >= 0 and seat < GameState.SEAT_COUNT:
+					return seat
+			push_warning("--seat=%s no es un puesto válido (0 a 3); se usa el 0." % value)
+	return 0
+
+
+# ===========================================================================
+# Perspectiva: de puesto a lugar en la pantalla
+# ===========================================================================
+# El jugador local se ve siempre abajo. Como el orden de turno es 0->1->2->3, la
+# posición de la derecha es siempre quien juega después de uno, y la de arriba es
+# el compañero (los compañeros se sientan enfrentados).
+func _screen_pos(seat: int) -> int:
+	return posmod(seat - local_seat, GameState.SEAT_COUNT)
+
+
+func _seat_at(pos: int) -> int:
+	return posmod(local_seat + pos, GameState.SEAT_COUNT)
+
+
+func _is_partner(seat: int) -> bool:
+	return seat == _seat_at(POS_TOP)
+
+
+# Etiqueta de un puesto ajeno: su nombre, que es IA, cuántas fichas le quedan y si
+# es el compañero o salió en esta mano.
+func _rival_label(seat: int, line_break: bool) -> String:
+	var partner: String = " — tu compañero" if _is_partner(seat) else ""
+	var separator: String = "\n" if line_break else " — "
+	return "%s (IA)%s%s%d fichas%s" % [
+		SEAT_NAMES[seat], partner, separator, pub.hand_counts[seat], _lead_mark(seat),
+	]
 
 
 # Marca del jugador que salió en la mano, para tener siempre la referencia de quién
@@ -682,7 +742,7 @@ func _proceed_turn() -> void:
 		return
 	_refresh_views()
 	_update_top_bar()
-	_render_south_hand()
+	_render_own_hand()
 	_update_pass_status()
 	_update_turn_dots()
 
@@ -701,7 +761,7 @@ func _proceed_turn() -> void:
 			_submit_pass(seat)
 		return
 
-	if seat != HUMAN_SEAT:
+	if seat != local_seat:
 		await get_tree().create_timer(0.9).timeout
 		if phase == Phase.PLAYING:
 			_ai_take_turn(seat)
@@ -1005,7 +1065,7 @@ func _game_over(winner_team: int) -> void:
 # Interacción del jugador humano
 # ===========================================================================
 func _on_hand_tile_pressed(idx: int) -> void:
-	if phase != Phase.PLAYING or pub.current_player != HUMAN_SEAT:
+	if phase != Phase.PLAYING or pub.current_player != local_seat:
 		return
 	var moves: Array = mine.legal_moves
 	var chosen: Variant = null
@@ -1017,7 +1077,7 @@ func _on_hand_tile_pressed(idx: int) -> void:
 		return
 	if pub.board.is_empty() or chosen.ends.size() == 1:
 		var e: String = chosen.ends[0]
-		_submit_play(HUMAN_SEAT, idx, e)
+		_submit_play(local_seat, idx, e)
 	else:
 		_show_end_choice_popup(idx)
 
@@ -1037,7 +1097,7 @@ func _on_end_choice(end: String) -> void:
 		return
 	var idx := pending_hand_idx
 	pending_hand_idx = -1
-	_submit_play(HUMAN_SEAT, idx, end)
+	_submit_play(local_seat, idx, end)
 
 
 # ===========================================================================
@@ -1047,19 +1107,19 @@ func _on_end_choice(end: String) -> void:
 # de "pub" y "mine".
 func _refresh_views() -> void:
 	pub = state.public_view()
-	mine = state.private_view(HUMAN_SEAT)
+	mine = state.private_view(local_seat)
 
 
 func _render_all() -> void:
 	_refresh_views()
 	_render_board()
-	_render_south_hand()
+	_render_own_hand()
 	_render_side_stacks()
-	_render_north_hand_backs()
+	_render_top_backs()
 	_update_top_bar()
 	_update_pass_status()
 	_update_turn_dots()
-	south_title.text = "Tu mano (Sur)%s" % _lead_mark(HUMAN_SEAT)
+	own_title.text = "Tu mano (%s)%s" % [SEAT_NAMES[local_seat], _lead_mark(local_seat)]
 
 
 # La ficha inicial (el burro) queda siempre exactamente en el centro del tablero y
@@ -1263,12 +1323,12 @@ func _place_board_tile(t: Domino, center: Vector2, scale: float, rotation_deg: f
 	board_viewport.add_child(tex)
 
 
-func _render_south_hand() -> void:
-	for c in south_hand_row.get_children():
+func _render_own_hand() -> void:
+	for c in own_hand_row.get_children():
 		c.queue_free()
 
 	var legal_by_idx := {}
-	if phase == Phase.PLAYING and pub.current_player == HUMAN_SEAT:
+	if phase == Phase.PLAYING and pub.current_player == local_seat:
 		for m in mine.legal_moves:
 			legal_by_idx[m.idx] = true
 
@@ -1284,32 +1344,35 @@ func _render_south_hand() -> void:
 		btn.modulate = Color(1, 1, 1, 1) if is_legal else Color(0.5, 0.5, 0.5, 1)
 		var idx_capture := i
 		btn.pressed.connect(func(): _on_hand_tile_pressed(idx_capture))
-		south_hand_row.add_child(btn)
+		own_hand_row.add_child(btn)
 
 
 # Las tres manos de la IA usan fichas del mismo tamaño (44x88, la misma proporción
 # 1:2 de una ficha real): de pie para Norte, acostadas para los laterales, según
 # cómo las sostendría cada jugador desde su puesto.
-func _render_north_hand_backs() -> void:
-	north_title.text = "Norte (IA) — compañero de Sur — %d fichas%s" % [pub.hand_counts[2], _lead_mark(2)]
-	for c in north_row.get_children():
+func _render_top_backs() -> void:
+	var seat: int = _seat_at(POS_TOP)
+	top_title.text = _rival_label(seat, false)
+	for c in top_row.get_children():
 		c.queue_free()
-	for i in range(pub.hand_counts[2]):
-		north_row.add_child(_make_tile_back(44, 88))
+	for i in range(pub.hand_counts[seat]):
+		top_row.add_child(_make_tile_back(44, 88))
 
 
 func _render_side_stacks() -> void:
-	west_title.text = "Oeste (IA)\n%d fichas%s" % [pub.hand_counts[3], _lead_mark(3)]
-	for c in west_stack.get_children():
+	var left_seat: int = _seat_at(POS_LEFT)
+	left_title.text = _rival_label(left_seat, true)
+	for c in left_stack.get_children():
 		c.queue_free()
-	for i in range(pub.hand_counts[3]):
-		west_stack.add_child(_make_tile_back(88, 44))
+	for i in range(pub.hand_counts[left_seat]):
+		left_stack.add_child(_make_tile_back(88, 44))
 
-	east_title.text = "Este (IA)\n%d fichas%s" % [pub.hand_counts[1], _lead_mark(1)]
-	for c in east_stack.get_children():
+	var right_seat: int = _seat_at(POS_RIGHT)
+	right_title.text = _rival_label(right_seat, true)
+	for c in right_stack.get_children():
 		c.queue_free()
-	for i in range(pub.hand_counts[1]):
-		east_stack.add_child(_make_tile_back(88, 44))
+	for i in range(pub.hand_counts[right_seat]):
+		right_stack.add_child(_make_tile_back(88, 44))
 
 
 func _update_top_bar() -> void:
@@ -1317,7 +1380,7 @@ func _update_top_bar() -> void:
 	lbl_score0.text = "Sur-Norte: %d" % pub.team_score[0]
 	lbl_score1.text = "Este-Oeste: %d" % pub.team_score[1]
 	if phase == Phase.PLAYING:
-		var who: String = "Tú" if pub.current_player == HUMAN_SEAT else "IA"
+		var who: String = "Tú" if pub.current_player == local_seat else "IA"
 		lbl_turn.text = "Turno: %s (%s)" % [SEAT_NAMES[pub.current_player], who]
 	else:
 		lbl_turn.text = ""
@@ -1331,7 +1394,7 @@ func _update_top_bar() -> void:
 # El pase es automático (ver _proceed_turn) para que el juego nunca se quede
 # esperando un clic que no llega; esto solo informa el estado del turno.
 func _update_pass_status() -> void:
-	if phase != Phase.PLAYING or pub.current_player != HUMAN_SEAT:
+	if phase != Phase.PLAYING or pub.current_player != local_seat:
 		pass_status.text = ""
 	elif mine.legal_moves.is_empty():
 		pass_status.text = "Sin fichas jugables: pasando…"
