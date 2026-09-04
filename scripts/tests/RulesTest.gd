@@ -21,11 +21,31 @@ const HARNESS_SEED := 20260904
 ## si se supera con holgura, es que la mano no termina y hay que avisar.
 const MAX_ACTIONS_PER_HAND := 400
 
+## Partidas que se juegan a través de GameSession para verificar el ORDEN de los
+## anuncios. Van a meta 100 y sin pausas, así que son baratas.
+const SESSION_MATCHES := 60
+const MAX_SESSION_STEPS := 4000
+
 var _failures: Array = []
 var _hands_played := 0
 var _actions := 0
 var _tranques := 0
 var _capicuas := 0
+
+# Estado del recorrido de GameSession: la secuencia de anuncios de la acción en
+# curso, el turno que la sesión dejó anunciado y los contadores del informe.
+var _session: GameSession
+var _session_ctx: String = ""
+var _seq: Array = []
+var _pending_turn: Dictionary = {}
+var _session_champion: int = -1
+var _last_session_hand_id: int = 0
+var _session_hands: int = 0
+var _session_actions: int = 0
+
+# Resultado de las pruebas del servidor, que corren en su propio archivo porque no
+# comparten nada con estas: ni reglas ni estado, solo el informe final.
+var _server_checks: int = 0
 
 
 func _ready() -> void:
@@ -33,6 +53,8 @@ func _ready() -> void:
 	_test_rejections()
 	_test_capicua_cases()
 	_test_random_matches()
+	_test_session_sequence()
+	_test_server()
 	_report()
 
 
@@ -399,6 +421,8 @@ func _fail(msg: String) -> void:
 
 func _report() -> void:
 	print("[test] %d manos, %d acciones, %d tranques, %d capicúas" % [_hands_played, _actions, _tranques, _capicuas])
+	print("[test] sesión: %d manos, %d acciones en %d partidas" % [_session_hands, _session_actions, SESSION_MATCHES])
+	print("[test] servidor: %d comprobaciones" % _server_checks)
 
 	if _failures.is_empty():
 		print("[test] TODO BIEN")
@@ -414,3 +438,196 @@ func _report() -> void:
 	if _failures.size() > shown:
 		printerr("  ... y %d más" % (_failures.size() - shown))
 	get_tree().quit(1)
+
+
+# ===========================================================================
+# GameSession: el orden de los anuncios
+# ===========================================================================
+## Todo lo de arriba llama a GameState directo, así que prueba las REGLAS pero no la
+## secuencia en que se anuncia lo que pasa. Esa secuencia es contrato: la pantalla y
+## el servidor dependen de ella, y romperla no rompe ninguna regla — se vería como un
+## resumen dibujado sobre la mesa vieja, o un registro que cuenta el final antes de
+## contar la última jugada.
+##
+## Se puede correr a toda velocidad porque GameSession no tiene temporizadores: acá
+## los cuatro puestos los mueve la IA y no hay ninguna pausa.
+func _test_session_sequence() -> void:
+	# La sesión reparte con randi() —el azar es de la autoridad, no de quien llama—,
+	# así que se fija el generador global para que una falla se pueda reproducir.
+	seed(HARNESS_SEED + 7)
+	for m in range(SESSION_MATCHES):
+		_run_session_match("sesión %d" % m)
+
+
+func _run_session_match(ctx: String) -> void:
+	_session_ctx = ctx
+	_session = GameSession.new()
+	_pending_turn = {}
+	_session_champion = -1
+	_last_session_hand_id = 0
+	_session.events.connect(_on_session_events)
+	_session.state_changed.connect(_on_session_state_changed)
+	_session.hand_started.connect(_on_session_hand_started)
+	_session.hand_ended.connect(_on_session_hand_ended)
+	_session.match_ended.connect(_on_session_match_ended)
+	_session.turn_ready.connect(_on_session_turn_ready)
+
+	# Meta baja: la secuencia no depende del puntaje y así cada partida es corta.
+	_seq = []
+	_session.start_match({"target_score": 100})
+	if not _seq_is(["state", "hand_started", "turn_ready"]):
+		_fail("%s: secuencia inesperada en el reparto inicial: %s" % [ctx, str(_seq)])
+		return
+
+	# Una acción inválida no cambió nada, así que solo debe anunciar el rechazo: ni
+	# estado nuevo ni turno otra vez. Importa en red, donde lo contrario significaría
+	# que alguien mandando jugadas inválidas en bucle hace que el servidor le difunda
+	# el estado a los cuatro jugadores por cada intento.
+	var intruder: int = (_session.current_seat() + 1) % GameState.SEAT_COUNT
+	var turn_before: int = _session.current_seat()
+	_seq = []
+	_session.play(intruder, 0, "L")
+	if not _seq_is(["events"]):
+		_fail("%s: una jugada fuera de turno anunció %s" % [ctx, str(_seq)])
+		return
+	if _session.current_seat() != turn_before:
+		_fail("%s: una jugada fuera de turno movió el turno" % ctx)
+		return
+
+	var guard: int = 0
+	while _session_champion < 0:
+		guard += 1
+		if guard > MAX_SESSION_STEPS:
+			_fail("%s: la partida no terminó en %d pasos" % [ctx, MAX_SESSION_STEPS])
+			return
+
+		if not _pending_turn.is_empty():
+			if not _session_take_turn(ctx):
+				return
+			continue
+
+		if _session.hand_over():
+			_seq = []
+			_session.continue_after_hand()
+			if not _seq_is(["match_ended"]) and not _seq_is(["state", "hand_started", "turn_ready"]):
+				_fail("%s: secuencia inesperada al seguir tras la mano: %s" % [ctx, str(_seq)])
+				return
+			continue
+
+		# Ni turno pendiente ni mano cerrada: la sesión se quedó sin decir qué sigue,
+		# y nadie la podría mover.
+		_fail("%s: la sesión quedó sin turno pendiente y sin mano cerrada" % ctx)
+		return
+
+
+## Mueve el turno anunciado. Devuelve false si algo falló y hay que abandonar.
+func _session_take_turn(ctx: String) -> bool:
+	var turn: Dictionary = _pending_turn
+	_pending_turn = {}
+	var seat: int = int(turn.seat)
+	_seq = []
+	_session_actions += 1
+
+	if bool(turn.must_pass):
+		_session.force_pass(seat)
+	else:
+		var choice: Dictionary = DominoAI.choose(_session.private_view(seat))
+		if choice.is_empty():
+			_fail("%s: must_pass era falso pero la IA no encontró jugada" % ctx)
+			return false
+		_session.play(seat, int(choice.idx), str(choice.end))
+
+	# Toda acción termina de una de dos maneras: la mesa sigue, o la mano cerró.
+	if _seq_is(["events", "state", "turn_ready"]) or _seq_is(["events", "state", "hand_ended"]):
+		return true
+	_fail("%s: secuencia inesperada tras la acción: %s" % [ctx, str(_seq)])
+	return false
+
+
+func _seq_is(expected: Array) -> bool:
+	if _seq.size() != expected.size():
+		return false
+	for i in range(expected.size()):
+		if str(_seq[i]) != str(expected[i]):
+			return false
+	return true
+
+
+func _on_session_events(_list: Array) -> void:
+	_seq.append("events")
+
+
+func _on_session_state_changed() -> void:
+	_seq.append("state")
+
+
+func _on_session_hand_started() -> void:
+	_seq.append("hand_started")
+	if _session.hand_id <= _last_session_hand_id:
+		_fail("%s: hand_id no subió con el reparto (quedó en %d)" % [_session_ctx, _session.hand_id])
+	_last_session_hand_id = _session.hand_id
+
+
+func _on_session_hand_ended(closing: Dictionary, reveal: Dictionary) -> void:
+	_seq.append("hand_ended")
+	_session_hands += 1
+
+	# El destape solo tiene sentido con la mano cerrada, y quien lo recibe tiene que
+	# poder comprobarlo por su cuenta: para eso viaja "hand_over" dentro.
+	if not bool(reveal.hand_over):
+		_fail("%s: el destape llegó sin la mano marcada como cerrada" % _session_ctx)
+	if not _session.hand_over():
+		_fail("%s: hand_ended con la sesión sin mano cerrada" % _session_ctx)
+
+	var hands: Array = reveal.hands
+	if hands.size() != GameState.SEAT_COUNT:
+		_fail("%s: el destape trae %d manos, no %d" % [_session_ctx, hands.size(), GameState.SEAT_COUNT])
+
+	var kind: String = str(closing.get("type", ""))
+	if kind != "hand_won" and kind != "tranque":
+		_fail("%s: cierre de tipo inesperado (%s)" % [_session_ctx, kind])
+
+
+func _on_session_match_ended(winner_team: int) -> void:
+	_seq.append("match_ended")
+	_session_champion = winner_team
+
+	# La partida no puede cerrarse con el supuesto campeón por debajo de la meta.
+	var pub: Dictionary = _session.public_view()
+	var scores: Array = pub.team_score
+	if int(scores[winner_team]) < int(pub.target_score):
+		_fail("%s: match_ended con el equipo %d en %d puntos, sin llegar a la meta de %d" % [
+			_session_ctx, winner_team, int(scores[winner_team]), int(pub.target_score),
+		])
+
+
+func _on_session_turn_ready(seat: int, must_pass: bool) -> void:
+	_seq.append("turn_ready")
+	_pending_turn = {"seat": seat, "must_pass": must_pass}
+
+	if seat != _session.current_seat():
+		_fail("%s: turn_ready anunció el puesto %d pero el de turno es %d" % [_session_ctx, seat, _session.current_seat()])
+	if _session.hand_over():
+		_fail("%s: turn_ready con la mano ya cerrada" % _session_ctx)
+
+	# "must_pass" se comprueba contra la vista privada de ese puesto, que es otra
+	# manera de llegar al mismo dato sin volver a preguntarle a la sesión.
+	var moves: Array = _session.private_view(seat).legal_moves
+	if must_pass != moves.is_empty():
+		_fail("%s: must_pass=%s pero el puesto %d tiene %d jugadas posibles" % [
+			_session_ctx, str(must_pass), seat, moves.size(),
+		])
+
+
+# ===========================================================================
+# Servidor de salas
+# ===========================================================================
+## Las pruebas del servidor viven en ServerTest porque no comparten nada con estas:
+## no tocan reglas ni estado, prueban salas, códigos y el formato de los mensajes. Se
+## corren desde acá para que "godot --headless -- --test" siga siendo un solo comando.
+func _test_server() -> void:
+	var suite := ServerTest.new()
+	suite.run()
+	_server_checks = suite.checks
+	for f in suite.failures:
+		_failures.append(f)

@@ -383,6 +383,15 @@ func _build_end_choice_popup() -> void:
 	right_btn.pressed.connect(func(): _on_end_choice("R"))
 	row.add_child(right_btn)
 
+	# Salida sin jugar. Hace falta porque mientras la elección está abierta la mano
+	# queda bloqueada: sin este botón, elegir una ficha de dos puntas te obligaba a
+	# jugarla.
+	var cancel_btn := Button.new()
+	cancel_btn.name = "CancelBtn"
+	cancel_btn.text = "No jugar"
+	cancel_btn.pressed.connect(_cancel_end_choice)
+	row.add_child(cancel_btn)
+
 
 func _build_toast() -> void:
 	toast_panel = PanelContainer.new()
@@ -803,9 +812,14 @@ func _handle_event(e: Dictionary) -> void:
 		"tranque":
 			_log("¡Tranque! %s (%d) contra %s (%d): gana el equipo %s. (+%d puntos)" % [SEAT_NAMES[e.closer], e.closer_pips, SEAT_NAMES[e.challenger], e.challenger_pips, TEAM_NAMES[e.winner_team], e.pts])
 		"rejected":
-			# No debería pasar jugando en local; en red será la respuesta normal a un
-			# cliente que mande algo inválido.
+			# El aviso al desarrollador se queda: jugando en local un rechazo solo puede
+			# venir de un error de la interfaz. En red va a ser normal con latencia,
+			# porque la mesa puede avanzar mientras el clic viaja.
 			push_warning("Jugada rechazada de %s: %s" % [SEAT_NAMES[e.seat], e.reason])
+			# Y al jugador se le dice: si no, el clic no hace nada y parece que el juego
+			# se colgó.
+			if e.seat == local_seat:
+				_show_toast(_rejection_text(str(e.reason)))
 
 
 # El evento trae el tipo de bonificación y quién la provocó; el texto se redacta
@@ -1010,6 +1024,14 @@ func _on_hand_result_continue() -> void:
 func _on_hand_tile_pressed(idx: int) -> void:
 	if phase != Phase.PLAYING or pub.current_player != local_seat:
 		return
+
+	# Con la elección de punta abierta no se toca otra ficha: hay que contestarla o
+	# cancelarla. El popup está más arriba en la pantalla y NO tapa la mano, así que sin
+	# esto se podía jugar otra ficha por debajo y dejar la elección vieja viva — y
+	# contestarla después llegaba como una jugada fuera de turno.
+	if pending_hand_idx >= 0:
+		return
+
 	var moves: Array = mine.legal_moves
 	var chosen: Variant = null
 	for m in moves:
@@ -1032,15 +1054,37 @@ func _show_end_choice_popup(idx: int) -> void:
 	left_btn.text = "Izquierda (%d)" % pub.left_end
 	right_btn.text = "Derecha (%d)" % pub.right_end
 	end_choice_popup.visible = true
+	# Se redibuja la mano para que las fichas queden apagadas: así el bloqueo se ve, en
+	# vez de que el clic simplemente no haga nada.
+	_render_own_hand()
 
 
 func _on_end_choice(end: String) -> void:
+	if pending_hand_idx < 0:
+		_cancel_end_choice()
+		return
+	var idx: int = pending_hand_idx
+	_cancel_end_choice()
+	transport.request_play(idx, end)
+
+
+## Cierra la elección de punta y olvida la ficha pendiente.
+func _cancel_end_choice() -> void:
+	pending_hand_idx = -1
 	end_choice_popup.visible = false
+	_render_own_hand()
+
+
+## El popup solo tiene sentido mientras sea tu turno, así que se cierra solo en cuanto
+## deja de serlo. Sin esto quedaba abierto encima de la mesa (no la tapa: tu mano está
+## más abajo y se puede tocar igual), y contestarlo después mandaba una jugada fuera de
+## turno. En red va a pasar más seguido, porque la mesa puede avanzar mientras lo estás
+## mirando.
+func _sync_end_choice() -> void:
 	if pending_hand_idx < 0:
 		return
-	var idx := pending_hand_idx
-	pending_hand_idx = -1
-	transport.request_play(idx, end)
+	if phase != Phase.PLAYING or pub.current_player != local_seat:
+		_cancel_end_choice()
 
 
 # ===========================================================================
@@ -1055,6 +1099,7 @@ func _team_of(seat: int) -> int:
 
 
 func _render_all() -> void:
+	_sync_end_choice()
 	_render_board()
 	_render_own_hand()
 	_render_side_stacks()
@@ -1126,22 +1171,22 @@ func _render_board() -> void:
 
 	var half_w: float = board_viewport.size.x / 2.0
 	var half_h: float = board_viewport.size.y / 2.0
-	var scale := 1.0
-	if max_x > 1.0 and half_w / max_x < scale:
-		scale = half_w / max_x
-	if -min_x > 1.0 and half_w / (-min_x) < scale:
-		scale = half_w / (-min_x)
-	if max_y > 1.0 and half_h / max_y < scale:
-		scale = half_h / max_y
-	if -min_y > 1.0 and half_h / (-min_y) < scale:
-		scale = half_h / (-min_y)
-	if scale < 0.28:
-		scale = 0.28
+	var fit_scale := 1.0
+	if max_x > 1.0 and half_w / max_x < fit_scale:
+		fit_scale = half_w / max_x
+	if -min_x > 1.0 and half_w / (-min_x) < fit_scale:
+		fit_scale = half_w / (-min_x)
+	if max_y > 1.0 and half_h / max_y < fit_scale:
+		fit_scale = half_h / max_y
+	if -min_y > 1.0 and half_h / (-min_y) < fit_scale:
+		fit_scale = half_h / (-min_y)
+	if fit_scale < 0.28:
+		fit_scale = 0.28
 
 	var anchor_screen: Vector2 = board_viewport.size / 2.0
 	for p in placements:
 		var rot: float = p.get("rotation", 0.0)
-		_place_board_tile(p.domino, anchor_screen + p.offset * scale, scale, rot)
+		_place_board_tile(p.domino, anchor_screen + p.offset * fit_scale, fit_scale, rot)
 
 
 # Calcula toda la fila de un lado de la hilera (derecho o izquierdo). Avanza en línea
@@ -1203,10 +1248,10 @@ func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y:
 			pending_row_start = false
 
 		var center: Vector2
-		var size: Vector2
+		var slot_size: Vector2
 		if not turning:
 			center = Vector2(x_pos + x_sign * (along / 2.0), row_y)
-			size = Vector2(along, perp)
+			slot_size = Vector2(along, perp)
 			x_pos += x_sign * along
 			count_in_row += 1
 			# Guarda el borde real de ESTA ficha (no la línea central de la fila) para
@@ -1215,7 +1260,7 @@ func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y:
 			y_level = row_y + turn_dir_y * (perp / 2.0)
 		else:
 			center = Vector2(turn_col_x, y_level + turn_dir_y * (along / 2.0))
-			size = Vector2(perp, along)
+			slot_size = Vector2(perp, along)
 			y_level += turn_dir_y * along
 			if not t.is_double():
 				x_sign = -x_sign
@@ -1235,7 +1280,7 @@ func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y:
 		else:
 			angle = _dir_angle(direction)
 
-		result.append({"domino": t, "offset": center, "size": size, "rotation": angle})
+		result.append({"domino": t, "offset": center, "size": slot_size, "rotation": angle})
 		connect_value = outward_value
 
 	return result
@@ -1253,8 +1298,8 @@ func _dir_angle(dir: Vector2) -> float:
 	return 0.0
 
 
-func _place_board_tile(t: Domino, center: Vector2, scale: float, rotation_deg: float) -> void:
-	var natural: Vector2 = Vector2(64, 128) * scale
+func _place_board_tile(t: Domino, center: Vector2, tile_scale: float, rotation_deg: float) -> void:
+	var natural: Vector2 = Vector2(64, 128) * tile_scale
 	var tex := TextureRect.new()
 	tex.texture = load(t.texture())
 	tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -1271,7 +1316,9 @@ func _render_own_hand() -> void:
 		c.queue_free()
 
 	var legal_by_idx := {}
-	if phase == Phase.PLAYING and pub.current_player == local_seat:
+	# Con la elección de punta abierta la mano queda apagada: la decisión pendiente es
+	# esa, y se ve que no se puede tocar otra ficha en vez de que el clic no haga nada.
+	if phase == Phase.PLAYING and pub.current_player == local_seat and pending_hand_idx < 0:
 		for m in mine.legal_moves:
 			legal_by_idx[m.idx] = true
 
@@ -1347,3 +1394,20 @@ func _update_pass_status() -> void:
 
 func _log(msg: String) -> void:
 	log_rt.append_text(msg + "\n")
+
+
+# Los motivos de rechazo vienen como clave, no como texto: el idioma se resuelve acá,
+# igual que con el resto de los eventos.
+func _rejection_text(reason: String) -> String:
+	match reason:
+		"no_es_su_turno":
+			return "Ya no es tu turno"
+		"ficha_no_jugable":
+			return "Esa ficha no calza en la mesa"
+		"punta_invalida":
+			return "Esa ficha no va en esa punta"
+		"mano_terminada":
+			return "La mano ya terminó"
+		"tiene_jugada":
+			return "Tienes ficha jugable: debes jugarla"
+	return "Esa jugada no se pudo aplicar"

@@ -19,7 +19,9 @@ puestos los maneja la IA.
 4. Cuando sea tu turno, las fichas jugables de tu mano se ven en color normal y las
    que no puedes jugar se ven grises. Haz clic en la ficha que quieras jugar.
 5. Si la ficha calza en las dos puntas, aparece un aviso para que elijas en cuál
-   jugarla (izquierda o derecha).
+   jugarla (izquierda o derecha). Mientras está abierto el resto de tu mano queda
+   apagada: la decisión pendiente es esa. Si te arrepientes, **No jugar** lo cierra y
+   te deja elegir otra ficha.
 6. Al terminar cada mano aparece una pantalla con el resultado: quién ganó, las
    fichas que se cuentan (con los puntos de cada jugador y el total de la pareja) y
    el marcador. La partida sigue cuando pulsas **Continuar**.
@@ -100,23 +102,85 @@ scenes/Server.tscn         El servidor dedicado
 scripts/Boot.gd            Detección de modo servidor
 scripts/Domino.gd          Clase de ficha: valores, dobles, puntos y su textura
 scripts/rules/GameState.gd Estado y reglas, sin interfaz (corre igual en el servidor)
+scripts/rules/GameSession.gd  Secuencia autoritativa de la mano, sin nodos ni relojes
+scripts/rules/DominoAI.gd  Jugador automático (solo ve la vista privada de su puesto)
 scripts/Main.gd            Interfaz: dibuja y manda acciones (no conoce las reglas)
 scripts/net/Transport.gd   Contrato entre la interfaz y quien tiene la autoridad
-scripts/net/LocalTransport.gd  Autoridad en este proceso: reglas, turnos e IA
-scripts/server/ServerMain.gd  Servidor WebSocket
+scripts/net/LocalTransport.gd  Autoridad en este proceso: ritmo, IA y un solo puesto
+scripts/net/Protocol.gd    Formato de los mensajes y traducción a/desde JSON
+scripts/server/ServerMain.gd  Puerto, JSON y enrutado (el borde del sistema)
+scripts/server/RoomCode.gd Alfabeto y generación de códigos de sala
+scripts/server/Room.gd     Una sala: cuatro puestos alrededor de una GameSession
+scripts/server/RoomRegistry.gd  Todas las salas vivas, y su recolección al vencer
+scripts/tests/RulesTest.gd Arnés de reglas y de la secuencia de la sesión
+scripts/tests/ServerTest.gd  Arnés de salas, códigos y protocolo (sin abrir puertos)
 docker/Dockerfile          Build del servidor dedicado
 DominoTiles/*.png          Las 28 imágenes de fichas (128x256 cada una)
 ```
 
-## Servidor dedicado (en construcción)
+## Servidor de salas
 
 El mismo binario sirve para las dos cosas: `scenes/Boot.tscn` arranca el juego con
-interfaz, salvo que detecte modo servidor (plantilla *dedicated server* o el
-argumento `--server`).
+interfaz, salvo que detecte modo servidor (plantilla *dedicated server* o el argumento
+`--server`).
 
-Por ahora el servidor solo valida la cadena de despliegue: acepta conexiones
-WebSocket, saluda al conectar y responde a un `ping`. Las salas con código y el
-juego en red vienen después.
+El servidor tiene tres capas, y la de arriba es a propósito la más delgada:
+
+| Archivo | Qué hace |
+|---|---|
+| `ServerMain.gd` | Abre el puerto, desempaqueta JSON, comprueba que cada campo tenga la forma que dice tener, y despacha. Nada de reglas. |
+| `RoomRegistry.gd` | Crea y encuentra salas por código, y recoge las que vencen. |
+| `Room.gd` | Una sala: hasta cuatro jugadores alrededor de una `GameSession`. Es la autoridad. |
+
+`ServerMain` es el **borde del sistema**: todo lo que entra por el socket viene de un
+cliente que no controlamos y podría estar modificado, así que ahí se valida y se acota
+todo. La meta se recorta entre 50 y 1000 y las bonificaciones a 500, porque un cliente
+modificado podría pedir una meta de mil millones y dejar la mesa jugando para siempre.
+
+### Códigos de sala
+
+Cinco letras del alfabeto `BCDFGHJKMNPQRSTVWXYZ`, elegido para que no haya manera de
+equivocarse al leerlo:
+
+- **Sin 0/O ni 1/I/L**, las confusiones clásicas al teclear un código ajeno.
+- **Solo letras**, porque mezclar letras y números obliga a aclarar si es la B o el 8.
+- **Sin vocales**, porque con vocales cinco caracteres al azar tarde o temprano forman
+  una palabra, y algunas no se le mandan a nadie.
+
+Quedan 3.2 millones de códigos, muchísimos más de los que van a existir a la vez. El
+precio es que se ven feos y no se pronuncian; vale la pena, porque se comparten
+copiando y pegando mucho más de lo que se dictan, y un código mal tecleado es un
+jugador que no entra. Al entrar se normaliza, así que `bcd-fg` y `BCDFG` son la misma
+sala.
+
+### Dos decisiones que vale explicar
+
+**El reloj va por `tick(delta)`, no por `await`.** Es la diferencia con
+`LocalTransport`, y no es un detalle: un servidor tiene que poder adelantar su reloj.
+Así las pruebas comprueban en un instante lo que en la vida real tarda minutos, y no
+quedan corrutinas sueltas cuando una sala muere.
+
+**Los puestos que nadie ocupa los juega la IA.** Dos o tres amigos pueden jugar sin
+esperar un cuarto, y es la misma maquinaria que hará falta para relevar a quien se
+desconecte.
+
+### El nombre de los demás es contenido que no controlamos
+
+El registro de la mesa se dibuja con BBCode, así que un nombre con corchetes adentro le
+cambiaría colores y texto a **todos** los otros jugadores. El servidor los quita al
+entrar, recorta a 16 caracteres y pone `Jugador` si queda vacío. Se limpia en el
+servidor y no en la pantalla porque es el único lugar por el que pasan todos.
+
+### Salas que vencen
+
+Una sala **no** se destruye al quedar vacía: se deja vencer sola a los 5 minutos, así
+quien se cayó y vuelve enseguida encuentra su mesa donde estaba. Una con gente adentro
+aguanta una hora, porque "sin actividad" muchas veces es que están conversando antes de
+empezar. Hay un tope de 200 salas: sin él, mandar `create_room` en bucle llena la
+memoria del servidor.
+
+Lo que falta de robustez —limitar cuántas veces se puede pedir por minuto, reloj de
+turno y reconexión guardando el puesto— viene con el resto de la fase de red.
 
 **Probar en local**, sin exportar nada:
 
@@ -181,18 +245,21 @@ En la imagen sin girar, la mitad de **arriba** siempre es el valor mayor y la de
 
 ## Separación de reglas e interfaz
 
-El proyecto está en tres capas y ninguna se mete en la de al lado:
+El proyecto está en cuatro capas y ninguna se mete en la de al lado:
 
 | Capa | Archivo | Qué hace |
 |---|---|---|
 | Reglas | `scripts/rules/GameState.gd` | Estado y reglas. No conoce nodos, no dibuja, no escribe en el registro y no usa `await`. |
-| Autoridad | `scripts/net/LocalTransport.gd` | Reparte, aplica jugadas, lleva el ritmo de los turnos, resuelve el pase forzado, mueve la IA y decide cuándo se acabó la partida. |
+| Autoridad | `scripts/rules/GameSession.gd` | La secuencia de una mano: repartir, aplicar, cerrar, seguir. Decide **qué** pasa y **en qué orden** se anuncia. Sin nodos ni temporizadores. |
+| Reparto | `scripts/net/LocalTransport.gd` | Le pone ritmo a los turnos, mueve las tres IA y le manda todo a un solo puesto. Es lo único que cambia al pasar a red. |
 | Interfaz | `scripts/Main.gd` | Dibuja, atiende al usuario y redacta los mensajes. **No conoce `GameState`.** |
 
-Esa separación es la que va a permitir correr las mismas reglas en el servidor
-dedicado, en vez de reimplementarlas en otro lenguaje y tener dos motores de reglas
-que mantener sincronizados: la capa de autoridad es la que se muda, y las otras dos
-quedan como están.
+Esa separación es la que permite correr las mismas reglas en el servidor dedicado, en
+vez de reimplementarlas en otro lenguaje y tener dos motores que mantener
+sincronizados. La frontera exacta está en `GameSession`: el servidor de salas la va a
+usar tal cual, y lo único que escribe de nuevo es la capa de reparto — porque ahí sí
+cambia todo (cuatro jugadores en vez de uno, un reloj de turno en vez de una pausa
+para que se vea).
 
 El reparto es **determinista por semilla** (`GameState.deal(seed)`): la misma semilla
 da siempre el mismo reparto, así se puede reproducir una mano exacta para depurar, y
@@ -331,12 +398,56 @@ cada acción, verifica invariantes:
   caza. En red, ese descuido es que un cliente modificado te vea la mano.
 - Las vistas entregan copias, no referencias: modificarlas no toca el estado.
 
-También prueba lo que **no** debe poderse: jugar fuera de turno, pasar teniendo
-jugada, abrir la primera mano sin el 6-6, y pedir una punta donde la ficha no calza.
-Y que un rechazo no altere el estado.
+Después juega 60 partidas más **a través de `GameSession`**, con los cuatro puestos en
+manos de la IA, para verificar el **orden de los anuncios**, que es contrato aparte:
 
-Sale con código 0 si todo pasa y 1 si algo falla, así sirve tal cual en CI. Cuando
-algo falla informa la semilla del reparto, para poder reproducir esa mano exacta.
+- Cada acción anuncia `events` → `state_changed` → (`turn_ready` o `hand_ended`), y
+  cada reparto `state_changed` → `hand_started` → `turn_ready`. Nada más y nada menos.
+- El `must_pass` de `turn_ready` coincide con lo que dice la vista privada de ese
+  puesto, que es otra manera de llegar al mismo dato.
+- Una acción rechazada anuncia `events` y nada más: no cambió nada, así que no hay
+  estado que difundir ni turno que anunciar de nuevo. En red, lo contrario significaría
+  que alguien mandando jugadas inválidas en bucle hace que el servidor le difunda el
+  estado a los cuatro jugadores por cada intento.
+- El destape llega **solo** con `hand_ended`, y con la mano marcada como cerrada.
+- `match_ended` no sale nunca con el supuesto campeón por debajo de la meta.
+- El número de mano sube con cada reparto, que es lo que permite descartar una espera
+  vieja cuando hay pausas o latencia.
+
+Esa segunda pasada existe porque romper el orden **no rompe ninguna regla**: al
+invertir `events` y `state_changed` a propósito, los números de la primera pasada
+salen idénticos y solo falla la segunda. En pantalla se vería como un resumen dibujado
+sobre la mesa vieja.
+
+También prueba lo que **no** debe poderse: jugar fuera de turno, pasar teniendo jugada,
+abrir la primera mano sin el 6-6, y pedir una punta donde la ficha no calza. Y que un
+rechazo no altere el estado.
+
+Y al final corre `ServerTest`, que prueba el lado del servidor **sin abrir ningún
+puerto**. Se puede porque ni `Room` ni `RoomRegistry` saben qué es un socket (lo que
+quieren mandar sale por una señal) y porque su reloj va por `tick(delta)`: una partida
+entera se juega en un instante adelantando el tiempo a mano.
+
+Lo que más importa de esa parte son las dos cosas que **solo existen en red** y que no
+se pueden comprobar jugando, porque en una sola pantalla la información nunca sale del
+proceso:
+
+- **A nadie le llegan las fichas de otro.** Se juntan las cuatro manos tal como se
+  mandaron y se verifica que sumen 28 sin una sola repetida: si el servidor le mandara
+  la mano de alguien a los cuatro, aparecería una ficha con dos dueños.
+- **Nadie puede jugar en nombre ajeno.** Una jugada fuera de turno se rechaza, no toca
+  la mesa, y el rechazo le llega **solo a quien se equivocó** — al resto no le aparece
+  nada.
+
+Lo demás: el alfabeto de los códigos (que no se le cuele un cero ni una vocal), que el
+sorteo use las 20 letras, que un código escrito a mano con minúsculas y guiones entre
+igual, las 28 fichas de ida y vuelta por JSON de verdad, que en lo codificado no quede
+ningún objeto que JSON no pueda mandar, la herencia del anfitrión cuando se va, el tope
+de salas, la limpieza de los nombres, y que una sala vacía venza pronto mientras una
+con gente aguanta.
+
+Sale con código 0 si todo pasa y 1 si algo falla, así sirve tal cual en CI. Cuando algo
+falla informa la semilla del reparto, para poder reproducir esa mano exacta.
 
 ## Cómo se dibuja el tablero
 
@@ -362,13 +473,15 @@ Esta parte es la que tiene más lógica no obvia, en `_layout_chain()` y
 
 ## La IA
 
-Sencilla a propósito: entre sus jugadas legales prefiere los dobles y, si no hay,
-la ficha de más puntos, para soltar las pesadas primero. No cuenta pases ni deduce
-qué tiene la pareja.
+`scripts/rules/DominoAI.gd`. Sencilla a propósito: entre sus jugadas legales prefiere
+los dobles y, si no hay, la ficha de más puntos, para soltar las pesadas primero. No
+cuenta pases ni deduce qué tiene la pareja.
 
-Vive en `LocalTransport`, del lado de la autoridad, y recibe la vista privada de su
-puesto igual que un jugador humano: por eso podrá correr en el servidor sin cambios
-cuando tenga que relevar a alguien que se desconecte.
+Recibe **la vista privada de su puesto y nada más**, aunque corra del lado de la
+autoridad: las mismas fichas y las mismas jugadas que vería una persona en esa silla.
+Sin esa restricción, el reemplazo de alguien que se desconecte jugaría mejor que el
+jugador al que sustituye. Tampoco decide pasar — devuelve "no tengo jugada" y el pase
+lo aplica la autoridad, igual que con una persona.
 
 Ideas para mejorarla: aprovechar la información de los pases (la guía insiste en que
 "cada pase habla"), llevar cuenta de números muertos, y jugar pensando en la pareja.
