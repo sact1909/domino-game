@@ -30,6 +30,97 @@ puestos los maneja la IA.
 > **Play** de nuevo: Godot no siempre aplica cambios de GDScript a una escena que ya
 > está corriendo.
 
+## Jugar en línea
+
+Desde la pantalla de inicio, **Jugar en línea con amigos**. O directo, sin pasar por la
+configuración local:
+
+```bash
+godot -- --online
+```
+
+Uno crea la sala y comparte el código de cinco letras; los demás entran con ese código.
+Cada uno pone su nombre.
+
+En la sala **el anfitrión arma los equipos**: toca dos sillas y se intercambian. Los
+demás ven la mesa pero no la pueden tocar.
+
+Es a propósito que no elija cada quien. Antes cada uno escogía su lado, y eso trae una
+negociación que el juego no puede mediar: dos personas apuntando al mismo sitio, y una
+llevándose un rechazo por algo que no hizo mal. Con una sola persona repartiendo no hay
+nada que ganarle a nadie, que es como funciona en una mesa de verdad — quien invita dice
+quién se sienta con quién. El costo es que los demás quedan pasivos, y eso entre amigos
+se arregla hablando.
+
+Se intercambian **sillas** y no "lados" porque con la mesa llena mover a alguien de lado
+obliga a que otro salga, y el intercambio dice exactamente quién. Con eso se llega a
+cualquier reparto de equipos, cosa que un botón de "pasar al otro lado" no garantiza.
+
+Las sillas se listan agrupadas por lado —`Sur-Norte` primero, `Este-Oeste` después— para
+que se lea de un vistazo quién juega con quién. Las que queden vacías las juega la
+máquina, así que dos o tres amigos pueden jugar sin esperar un cuarto.
+
+El anfitrión es también el único que ve los ajustes (meta y las tres bonificaciones) y el
+único que puede arrancar. Si se va, lo hereda el puesto ocupado más bajo, para que la
+sala no quede viva sin nadie que pueda empezar.
+
+### Al terminar una partida, la sala sigue viva
+
+Terminar una partida no cierra la sala. Cada uno decide, y las opciones dependen de quién
+seas:
+
+| | Anfitrión | Los demás |
+|---|---|---|
+| Seguir | **Volver a jugar** — la sala se mantiene y espera a los demás | **Volver a jugar** — sigues en la misma sala y en la misma silla |
+| Salir | **Cerrar sala** — saca a todos y la borra | **Salir de la sala** |
+
+La revancha la puede pedir cualquiera, igual que "Continuar" tras una mano: esperar a los
+cuatro deja la sala colgada en cuanto alguien se distrae, y quien todavía esté mirando el
+resultado se entera por la difusión del lobby. El marcador arranca en cero, pero la gente
+y las sillas se quedan como estaban.
+
+Cerrar la sala es potestad del anfitrión porque es quien la creó. Es distinto de que se
+vaya el último: eso deja la sala vencer sola por si alguien vuelve, y esto la termina a
+propósito.
+
+El campo de servidor está prellenado y se puede cambiar sin recompilar. También se puede
+fijar por línea de comandos:
+
+```bash
+godot -- --online --server-url=wss://mi-servidor
+```
+
+### El socket tiene que sobrevivir al cambio de escena
+
+Es la única parte del modo en red que no es obvia. El lobby abre el socket, se sienta en
+una sala y espera; cuando la partida arranca hay que llevar **ese mismo socket** a la
+mesa, porque reconectar significaría perder la silla. Y al pedir revancha el socket hace
+el viaje de vuelta, por el mismo buzón.
+
+Cambiar de escena en Godot destruye el árbol entero, y con él cualquier nodo que cuelgue
+de la escena vieja. Así que el lobby lo saca del árbol y lo deja en
+`TransportHandoff`, un buzón de un solo casillero: una variable estática vive con el
+script, no con el nodo, y sobrevive el cambio. La mesa lo retira al arrancar, el
+casillero queda vacío, y si no había nada arranca en modo local — que es exactamente lo
+que hacía antes de que el lobby existiera.
+
+Y hay una trampa que costó una tarde. Los paquetes se drenan TODOS los que llegaron en
+el mismo `poll()`, y el servidor difunde el aviso de "arrancó la partida" y el primer
+snapshot en el mismo cuadro, así que casi siempre llegan juntos. El lobby procesaba el
+primero, soltaba el socket para el traspaso, y el bucle seguía emitiendo el snapshot **a
+nadie**: la mesa todavía no existía. Resultado: tablero en blanco, y de forma
+intermitente según cómo cayera el momento — con cuatro ventanas, dos funcionaban y dos
+no.
+
+El arreglo es que **el transporte recuerda lo último que anunció** —en qué puesto
+quedaste, quién está en cada silla, el último estado de la mesa y si hay una mano en
+curso— y lo repite cuando la mesa lo reengancha. Así la pantalla no tiene que distinguir
+un reengancho de una partida que empieza, y no depende de llegar a tiempo a un mensaje
+que ya pasó.
+
+Lo único que se puede perder en esa ventana es alguna línea del registro de la mesa: el
+estado del tablero viene del snapshot, que sí se repite.
+
 ## Reglas implementadas
 
 Basadas en la guía del dominó dominicano (formato estándar de 4 jugadores):
@@ -99,16 +190,19 @@ project.godot              Configuración (ventana 1280x900, escena principal)
 scenes/Boot.tscn           Punto de entrada: decide entre juego y servidor
 scenes/Main.tscn           El juego (la interfaz se crea por código)
 scenes/Server.tscn         El servidor dedicado
+scenes/Lobby.tscn          La pantalla de entrada y sala para jugar en red
 scripts/Boot.gd            Detección de modo servidor
 scripts/Domino.gd          Clase de ficha: valores, dobles, puntos y su textura
 scripts/rules/GameState.gd Estado y reglas, sin interfaz (corre igual en el servidor)
 scripts/rules/GameSession.gd  Secuencia autoritativa de la mano, sin nodos ni relojes
 scripts/rules/DominoAI.gd  Jugador automático (solo ve la vista privada de su puesto)
-scripts/Main.gd            Interfaz: dibuja y manda acciones (no conoce las reglas)
+scripts/Main.gd            Interfaz de la mesa: dibuja y manda acciones
+scripts/Lobby.gd           Nombre, crear o entrar por código, elegir silla, arrancar
 scripts/net/Transport.gd   Contrato entre la interfaz y quien tiene la autoridad
 scripts/net/LocalTransport.gd  Autoridad en este proceso: ritmo, IA y un solo puesto
-scripts/net/Protocol.gd    Formato de los mensajes y traducción a/desde JSON
 scripts/net/WsClientTransport.gd  El mismo contrato, pero hablando con el servidor
+scripts/net/TransportHandoff.gd  Buzón para pasar el socket entre escenas
+scripts/net/Protocol.gd    Formato de los mensajes y traducción a/desde JSON
 scripts/server/ServerMain.gd  Puerto, JSON y enrutado (el borde del sistema)
 scripts/server/RoomCode.gd Alfabeto y generación de códigos de sala
 scripts/server/Room.gd     Una sala: cuatro puestos alrededor de una GameSession

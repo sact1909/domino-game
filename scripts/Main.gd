@@ -26,6 +26,8 @@ const POS_LEFT := 3
 # de la mano, igual que en una mesa real cuando la cadena se acerca al borde.
 const ROW_LENGTH := 5
 
+const LOBBY_SCENE := "res://scenes/Lobby.tscn"
+
 enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
 
 # ---------------------------------------------------------------------------
@@ -39,6 +41,20 @@ enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
 # proceso. Cuando el juego sea en red se cambia por uno que hable con el servidor y
 # este archivo no se toca.
 var transport: Transport
+
+
+## Si la partida es en red. Cambia poco: no se muestra la pantalla de configuración
+## —eso ya lo decidió el anfitrión en el lobby— y al terminar se vuelve al lobby en vez
+## de reconfigurar acá.
+var online_mode: bool = false
+
+# Si se cayó la conexión. Cambia qué ofrece la pantalla de fin: sin socket no hay sala a
+# la que volver ni que cerrar.
+var connection_lost: bool = false
+
+# Quién está en cada puesto: el nombre si es una persona, vacío si la juega la máquina.
+# Llega del transporte y se mantiene al día durante la partida.
+var seat_owners: Array = ["", "", "", ""]
 
 # Puesto que juega en ESTA pantalla. Su mano va siempre abajo y los otros tres se
 # acomodan alrededor según su lugar en el orden de turno. NO se elige acá: llega en
@@ -116,6 +132,8 @@ var pending_winner_team: int = -1
 
 var game_over_overlay: Control
 var game_over_label: Label
+var again_button: Button
+var leave_button: Button
 
 
 # ===========================================================================
@@ -137,18 +155,35 @@ func _ready() -> void:
 	_build_game_over_overlay()
 	_build_start_overlay()
 
-	# El transporte se arma con la interfaz ya construida, porque begin() contesta en
-	# el acto con el puesto y un primer snapshot de mesa vacía, y esos manejadores ya
-	# dibujan.
-	transport = LocalTransport.new(_resolve_local_seat())
+	# El transporte se engancha con la interfaz ya construida, porque begin() puede
+	# contestar en el acto —en local lo hace— y esos manejadores ya dibujan.
+	transport = _take_transport()
+	if online_mode:
+		# La configuración ya se eligió en el lobby, y el reparto lo manda el servidor:
+		# no hay nada que preguntar acá.
+		start_overlay.visible = false
 	transport.seat_assigned.connect(_on_seat_assigned)
 	transport.snapshot.connect(_on_snapshot)
 	transport.events.connect(_on_events)
 	transport.hand_started.connect(_on_hand_started)
 	transport.hand_ended.connect(_on_hand_ended)
 	transport.match_ended.connect(_on_match_ended)
+	transport.server_error.connect(_on_server_error)
+	transport.disconnected.connect(_on_disconnected)
+	transport.seats_changed.connect(_on_seats_changed)
 	add_child(transport)
 	transport.begin()
+
+
+## De dónde sale el transporte. Si el lobby dejó uno conectado en el buzón se usa ese;
+## si no, se arma el local. take() vacía el buzón, así que volver a esta pantalla más
+## tarde no reusa un socket ya cerrado.
+func _take_transport() -> Transport:
+	var handed: Transport = TransportHandoff.take()
+	if handed != null:
+		online_mode = true
+		return handed
+	return LocalTransport.new(_resolve_local_seat())
 
 
 func _build_background() -> void:
@@ -518,8 +553,8 @@ func _is_partner(seat: int) -> bool:
 func _rival_label(seat: int, line_break: bool) -> String:
 	var partner: String = " — tu compañero" if _is_partner(seat) else ""
 	var separator: String = "\n" if line_break else " — "
-	return "%s (IA)%s%s%d fichas%s" % [
-		SEAT_NAMES[seat], partner, separator, pub.hand_counts[seat], _lead_mark(seat),
+	return "%s %s%s%s%d fichas%s" % [
+		SEAT_NAMES[seat], _owner_label(seat), partner, separator, pub.hand_counts[seat], _lead_mark(seat),
 	]
 
 
@@ -592,13 +627,24 @@ func _build_game_over_overlay() -> void:
 	game_over_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(game_over_label)
 
-	var again_btn := Button.new()
-	again_btn.text = "Jugar de nuevo"
-	again_btn.custom_minimum_size = Vector2(200, 40)
-	again_btn.pressed.connect(_on_play_again_pressed)
-	var again_center := CenterContainer.new()
-	again_center.add_child(again_btn)
-	vb.add_child(again_center)
+	# Dos botones en fila. Jugando en local el segundo no tiene sentido —no hay sala que
+	# cerrar ni de la que salir— así que se esconde.
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 16)
+	vb.add_child(row)
+
+	again_button = Button.new()
+	again_button.text = "Jugar de nuevo"
+	again_button.custom_minimum_size = Vector2(200, 40)
+	again_button.pressed.connect(_on_play_again_pressed)
+	row.add_child(again_button)
+
+	leave_button = Button.new()
+	leave_button.custom_minimum_size = Vector2(200, 40)
+	leave_button.visible = false
+	leave_button.pressed.connect(_on_leave_pressed)
+	row.add_child(leave_button)
 
 
 func _build_start_overlay() -> void:
@@ -683,6 +729,16 @@ func _build_start_overlay() -> void:
 	start_center.add_child(start_btn)
 	vb.add_child(start_center)
 
+	# La partida en red se arma en otra pantalla, con su propio transporte y su propio
+	# ciclo. Mezclarla acá dejaría dos autoridades vivas a la vez.
+	var online_btn := Button.new()
+	online_btn.text = "Jugar en línea con amigos"
+	online_btn.custom_minimum_size = Vector2(220, 36)
+	online_btn.pressed.connect(_on_play_online_pressed)
+	var online_center := CenterContainer.new()
+	online_center.add_child(online_btn)
+	vb.add_child(online_center)
+
 
 func _add_bonus_field(parent: VBoxContainer, label_text: String, default_value: int) -> SpinBox:
 	var row := HBoxContainer.new()
@@ -744,9 +800,75 @@ func _on_start_pressed() -> void:
 	transport.start_match(config)
 
 
+func _on_play_online_pressed() -> void:
+	get_tree().change_scene_to_file.call_deferred(LOBBY_SCENE)
+
+
+## Qué ofrece la pantalla de fin de partida. En red la sala NO se cierra sola: sigue
+## viva con la misma gente, y cada uno decide si sigue. Cerrarla es potestad del
+## anfitrión, que es quien la creó.
+func _configure_end_buttons() -> void:
+	if connection_lost:
+		again_button.text = "Volver al inicio"
+		leave_button.visible = false
+		return
+	if not online_mode:
+		again_button.text = "Jugar de nuevo"
+		leave_button.visible = false
+		return
+	again_button.text = "Volver a jugar"
+	leave_button.visible = true
+	if _is_room_host():
+		leave_button.text = "Cerrar sala"
+	else:
+		leave_button.text = "Salir de la sala"
+
+
+func _is_room_host() -> bool:
+	var ws := transport as WsClientTransport
+	return ws != null and ws.is_host()
+
+
 func _on_play_again_pressed() -> void:
+	if phase != Phase.GAME_OVER:
+		return
 	game_over_overlay.visible = false
-	start_overlay.visible = true
+	if not online_mode:
+		start_overlay.visible = true
+		return
+	# La sala se mantiene: la misma gente en las mismas sillas. El servidor la devuelve
+	# al lobby, y allá se espera a los demás.
+	var ws := transport as WsClientTransport
+	if ws != null and ws.is_open():
+		ws.play_again()
+	_return_to_lobby()
+
+
+func _on_leave_pressed() -> void:
+	if phase != Phase.GAME_OVER:
+		return
+	game_over_overlay.visible = false
+	var ws := transport as WsClientTransport
+	if ws != null and ws.is_open():
+		if ws.is_host():
+			ws.close_room()
+		else:
+			ws.leave_room()
+	_return_to_lobby()
+
+
+## Devuelve el socket al lobby por el mismo buzón por el que vino. Hay que sacarlo del
+## árbol antes de cambiar de escena, igual que en la ida: si siguiera colgando de esta
+## pantalla se destruiría con ella y habría que reconectar desde cero.
+##
+## Un socket ya cerrado no se traspasa: el lobby arranca de nuevo desde la entrada.
+func _return_to_lobby() -> void:
+	var ws := transport as WsClientTransport
+	if ws != null and ws.is_open():
+		transport = null
+		remove_child(ws)
+		TransportHandoff.put(ws)
+	get_tree().change_scene_to_file.call_deferred(LOBBY_SCENE)
 
 
 # ===========================================================================
@@ -765,6 +887,14 @@ func _on_snapshot(new_pub: Dictionary, new_mine: Dictionary) -> void:
 	mine = new_mine
 	awaiting_play = false
 	_render_all()
+
+
+## Cambió quién está sentado. Se redibuja solo si ya hay algo que dibujar: en red este
+## aviso llega antes del primer snapshot.
+func _on_seats_changed(names: Array) -> void:
+	seat_owners = names
+	if not pub.is_empty():
+		_render_all()
 
 
 func _on_events(list: Array) -> void:
@@ -792,9 +922,31 @@ func _on_hand_ended(closing: Dictionary, hand_reveal: Dictionary) -> void:
 	_show_hand_result_for(closing)
 
 
+## Un rechazo del servidor. Se le dice al jugador en vez de dejar el clic sin efecto, y
+## se desbloquea la mano: un rechazo no trae estado nuevo, así que nadie más lo haría.
+func _on_server_error(reason: String) -> void:
+	_show_toast(_rejection_text(reason))
+	awaiting_play = false
+	_render_own_hand()
+
+
+## Se cayó la conexión. Hay que decirlo con claridad: sin esto la mesa se queda quieta y
+## parece que el juego se colgó, que es lo peor que puede pasarle a alguien jugando.
+func _on_disconnected() -> void:
+	phase = Phase.GAME_OVER
+	_cancel_end_choice()
+	hand_result_overlay.visible = false
+	connection_lost = true
+	game_over_label.text = "Se perdió la conexión con el servidor."
+	_configure_end_buttons()
+	game_over_overlay.visible = true
+	_log("[b]Se perdió la conexión con el servidor.[/b]")
+
+
 func _on_match_ended(winner_team: int) -> void:
 	phase = Phase.GAME_OVER
 	game_over_label.text = "¡Equipo %s gana la partida!\nPuntaje final: %d - %d" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]]
+	_configure_end_buttons()
 	game_over_overlay.visible = true
 	_log("[b]Fin de la partida. Gana el equipo %s (%d - %d).[/b]" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]])
 
@@ -1384,7 +1536,9 @@ func _update_top_bar() -> void:
 	lbl_score0.text = "Sur-Norte: %d" % pub.team_score[0]
 	lbl_score1.text = "Este-Oeste: %d" % pub.team_score[1]
 	if phase == Phase.PLAYING:
-		var who: String = "Tú" if pub.current_player == local_seat else "IA"
+		var who: String = "Tú"
+		if pub.current_player != local_seat:
+			who = _owner_name(pub.current_player)
 		lbl_turn.text = "Turno: %s (%s)" % [SEAT_NAMES[pub.current_player], who]
 	else:
 		lbl_turn.text = ""
@@ -1434,3 +1588,24 @@ func _send_play(idx: int, end: String) -> void:
 	awaiting_play = true
 	_render_own_hand()
 	transport.request_play(idx, end)
+
+
+## Quién ocupa un puesto ajeno: su nombre, o "IA" si la silla la juega la máquina.
+## Jugando en local son todas de la máquina; en red hay que decir el nombre, porque
+## etiquetar de "IA" al amigo que tienes enfrente es mentirle al jugador.
+func _owner_name(seat: int) -> String:
+	if seat < 0 or seat >= seat_owners.size():
+		return "IA"
+	var owner: String = str(seat_owners[seat])
+	if owner.is_empty():
+		return "IA"
+	return owner
+
+
+## Lo mismo, con la marca que lleva junto al nombre del puesto en los paneles.
+func _owner_label(seat: int) -> String:
+	if seat < 0 or seat >= seat_owners.size():
+		return "(IA)"
+	if str(seat_owners[seat]).is_empty():
+		return "(IA)"
+	return "· %s" % str(seat_owners[seat])

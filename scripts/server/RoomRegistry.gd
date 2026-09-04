@@ -191,3 +191,19 @@ func _send(peer_id: int, msg: Dictionary) -> void:
 
 func _error(peer_id: int, reason: String) -> void:
 	_send(peer_id, {"type": Protocol.S_ERROR, "reason": reason})
+
+
+## Cierra una sala del todo: avisa a los que estaban dentro y la borra. Solo el anfitrión
+## puede, porque es quien la creó. Es distinto de que se vaya el último: eso deja la sala
+## vencer sola por si alguien vuelve, y esto la termina a propósito.
+func close_room(peer_id: int) -> bool:
+	var room: Room = room_for(peer_id)
+	if room == null:
+		_error(peer_id, "no_estas_en_una_sala")
+		return false
+	if not room.is_host(peer_id):
+		_error(peer_id, "solo_el_anfitrion")
+		return false
+	room.announce_closed()
+	_drop_room(room.code)
+	return true

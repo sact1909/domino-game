@@ -127,16 +127,16 @@ func _advance() -> void:
 			return
 		_check(int(_clients[1].seat) == 1, "el segundo debería entrar en el puesto 1")
 		print("[red] entró el segundo en el puesto %d" % int(_clients[1].seat))
-		# Moverse al puesto 2 es cómo se eligen las parejas: 0 y 2 se sientan
-		# enfrentados, así que con esto los dos humanos quedan compañeros.
-		_transport(1).set_seat(2)
+		# Quien organiza es el anfitrión, no cada uno por su cuenta. Intercambia las sillas
+		# 1 y 2 para que los dos humanos queden enfrentados, que es ser compañeros.
+		_transport(0).swap_seats(1, 2)
 		_next_step()
 		return
 
 	if _step == 3:
 		if int(_clients[1].seat) != 2:
 			return
-		print("[red] el segundo se movió al puesto 2: los dos humanos quedan de pareja")
+		print("[red] el anfitrión reorganizó: el segundo pasó al puesto 2 y quedan de pareja")
 		_transport(0).start_match({"target_score": TARGET_SCORE})
 		_next_step()
 		return
@@ -145,6 +145,7 @@ func _advance() -> void:
 		if _mine(0).is_empty() or _mine(1).is_empty():
 			return
 		_check_deal()
+		_check_reattach()
 		_next_step()
 		return
 
@@ -254,6 +255,42 @@ func _check_deal() -> void:
 		_check(typeof(moves[0].idx) == TYPE_INT, "el índice de jugada volvió como %s" % type_string(typeof(moves[0].idx)))
 
 	print("[red] repartido: 7 y 7 fichas sin ninguna repetida, y los números volvieron enteros")
+
+
+## Simula el traspaso del lobby a la mesa: el transporte sale del árbol y vuelve, y quien
+## lo reengancha tiene que recibir el estado aunque los mensajes originales ya hayan
+## pasado.
+##
+## Es el caso que dejaba la mesa en blanco. Los paquetes se drenan todos los que llegaron
+## en el mismo poll(), así que cuando el aviso de "arrancó la partida" y el primer
+## snapshot vienen juntos, el lobby procesa el primero, suelta el socket para el
+## traspaso, y el bucle sigue emitiendo el snapshot a nadie: la mesa todavía no existe.
+## Acá se fuerza ese orden a propósito —primero se recibe todo, después se reengancha— y
+## se comprueba que el transporte lo repita.
+func _check_reattach() -> void:
+	var t: WsClientTransport = _transport(0)
+	var seat_before: int = int(_clients[0].seat)
+	var starts_before: int = int(_clients[0].hands_started)
+
+	# Se borra lo que ya se vio: si el reengancho no repite nada, esto queda vacío, que es
+	# exactamente lo que le pasaba a la pantalla.
+	_clients[0].pub = {}
+	_clients[0].mine = {}
+	_clients[0].seat = -1
+
+	var parent: Node = t.get_parent()
+	parent.remove_child(t)
+	parent.add_child(t)
+	t.begin()
+
+	_check(int(_clients[0].seat) == seat_before, "al reengancharse no se repitió el puesto")
+	_check(int(_clients[0].hands_started) > starts_before, "al reengancharse no se repitió el aviso de mano en curso")
+	_check(not _mine(0).is_empty(), "al reengancharse no se repitió el snapshot: la mesa quedaría en blanco")
+	if _mine(0).is_empty():
+		return
+	var tiles: Array = _mine(0).tiles
+	_check(tiles.size() == GameState.TILES_PER_HAND, "el snapshot repetido trajo %d fichas" % tiles.size())
+	print("[red] reengancho: el transporte repitió el puesto, la mano y el estado de la partida")
 
 
 func _check_hand_end() -> void:

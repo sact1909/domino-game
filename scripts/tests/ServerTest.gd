@@ -34,12 +34,16 @@ func run() -> void:
 	_test_room_code()
 	_test_protocol_tiles()
 	_test_protocol_views()
+	_test_room_phases()
 	_test_room_lobby()
 	_test_name_sanitizing()
 	_test_information_separation()
 	_test_turn_ownership()
 	_test_full_hand()
 	_test_ai_seats()
+	_test_host_organizes()
+	_test_play_again()
+	_test_close_room()
 	_test_registry()
 	_test_expiry()
 
@@ -168,6 +172,15 @@ func _test_protocol_views() -> void:
 # ===========================================================================
 # Sala: lobby, sillas y anfitrión
 # ===========================================================================
+## Las fases de la sala viajan en el mensaje de lobby como números. El cliente las lee
+## de Protocol y el servidor las tiene en su propio enum: si alguien reordena uno de los
+## dos, el cliente creería que la partida arrancó cuando no. Se comprueba que coincidan.
+func _test_room_phases() -> void:
+	_check(Room.Phase.LOBBY == Protocol.ROOM_LOBBY, "Room.Phase.LOBBY no coincide con Protocol.ROOM_LOBBY")
+	_check(Room.Phase.PLAYING == Protocol.ROOM_PLAYING, "Room.Phase.PLAYING no coincide con Protocol.ROOM_PLAYING")
+	_check(Room.Phase.FINISHED == Protocol.ROOM_FINISHED, "Room.Phase.FINISHED no coincide con Protocol.ROOM_FINISHED")
+
+
 func _test_room_lobby() -> void:
 	var room := _new_room()
 
@@ -186,15 +199,14 @@ func _test_room_lobby() -> void:
 	_check(room.host_seat() == 1, "el anfitrión debería pasar al puesto 1")
 	_check(room.is_host(102), "el segundo debería heredar el anfitrionazgo")
 
-	# Cambiar de silla es lo que decide las parejas: los puestos enfrentados son
-	# compañeros, así que moverse del 1 al 0 cambia con quién juegas.
-	_check(room.set_seat(102, 0), "debería poder moverse al puesto 0, que quedó libre")
-	_check(room.seat_of(102) == 0, "el puesto no se actualizó")
+	# Reorganizar la mesa es potestad del anfitrión, y se hace intercambiando sillas.
+	_check(not room.swap_seats(103, 1, 2), "quien no es anfitrión no debería reorganizar")
+	_check(_last_error_for(103) == "solo_el_anfitrion", "el motivo debería ser solo_el_anfitrion")
+	_check(room.swap_seats(102, 1, 0), "el anfitrión debería poder intercambiar sillas")
+	_check(room.seat_of(102) == 0, "el anfitrión no quedó en la silla que pidió")
 	_check(room.host_seat() == 0, "el anfitrión debería seguir a quien se movió")
-	_check(not room.set_seat(103, 0), "no debería poder sentarse en una silla ocupada")
-	_check(_last_error_for(103) == "puesto_ocupado", "el motivo debería ser puesto_ocupado")
-	_check(not room.set_seat(103, 9), "no debería aceptar un puesto que no existe")
-	_check(_last_error_for(103) == "puesto_invalido", "el motivo debería ser puesto_invalido")
+	_check(not room.swap_seats(102, 1, 9), "una silla que no existe no debería aceptarse")
+	_check(_last_error_for(102) == "puesto_invalido", "el motivo debería ser puesto_invalido")
 
 	# Solo el anfitrión arranca.
 	_check(not room.start_match(103, {}), "un jugador que no es anfitrión no debería arrancar")
@@ -203,8 +215,8 @@ func _test_room_lobby() -> void:
 	_check(room.phase == Room.Phase.PLAYING, "la sala debería estar jugando")
 
 	# Con la partida en curso las sillas se congelan y no entra nadie más.
-	_check(not room.set_seat(103, 3), "no debería poder cambiar de silla jugando")
-	_check(_last_error_for(103) == "partida_en_curso", "el motivo debería ser partida_en_curso")
+	_check(not room.swap_seats(102, 0, 3), "no debería poder reorganizar jugando")
+	_check(_last_error_for(102) == "partida_en_curso", "el motivo debería ser partida_en_curso")
 	_check(room.add_member(106, "Tarde") == -1, "no debería entrar nadie con la partida empezada")
 
 
@@ -594,3 +606,133 @@ func _check(ok: bool, what: String) -> void:
 func _fail(what: String) -> void:
 	checks += 1
 	failures.append("[servidor] %s" % what)
+
+
+# ===========================================================================
+# Elegir lado, revancha y cierre
+# ===========================================================================
+## Reorganizar la mesa. Lo importante es que lo hace UNA sola persona: antes cada quien
+## elegía su lado y dos que apuntaran al mismo sitio se pisaban. Ahora no hay carrera
+## posible, porque solo el anfitrión puede mover a nadie.
+func _test_host_organizes() -> void:
+	var room := _new_room()
+	room.add_member(901, "Ana")
+	room.add_member(902, "Beto")
+	room.add_member(903, "Cami")
+	room.add_member(904, "Dani")
+
+	# Entrando en orden, Ana (0) y Cami (2) son pareja, Beto (1) y Dani (3) la otra.
+	_check(GameState.TEAM_OF_SEAT[room.seat_of(901)] == GameState.TEAM_OF_SEAT[room.seat_of(903)], "el primero y el tercero deberían ser pareja")
+
+	# El anfitrión quiere a Ana con Beto: intercambia a Beto (1) con Cami (2).
+	_check(room.swap_seats(901, 1, 2), "el anfitrión debería poder intercambiar dos sillas")
+	_check(room.seat_of(902) == 2, "Beto no quedó donde estaba Cami")
+	_check(room.seat_of(903) == 1, "Cami no quedó donde estaba Beto")
+	_check(GameState.TEAM_OF_SEAT[room.seat_of(901)] == GameState.TEAM_OF_SEAT[room.seat_of(902)], "los dos deberían haber quedado de pareja")
+	_check(room.member_count() == 4, "el intercambio no debería sacar a nadie")
+
+	# Con una silla vacía el intercambio es una mudanza.
+	room.remove_member(904)
+	var cami_seat: int = room.seat_of(903)
+	_check(room.swap_seats(901, cami_seat, 3), "debería poder mover a alguien a una silla libre")
+	_check(room.seat_of(903) == 3, "no se movió a la silla libre")
+
+	# Una silla consigo misma no es un error: simplemente no mueve nada.
+	var ana_seat: int = room.seat_of(901)
+	_check(room.swap_seats(901, ana_seat, ana_seat), "una silla consigo misma no debería fallar")
+	_check(room.seat_of(901) == ana_seat, "una silla consigo misma no debería mover a nadie")
+
+	# Dos sillas vacías sí se avisan: si no, el anfitrión toca algo y no ve ningún cambio.
+	var solo := _new_room()
+	solo.add_member(905, "Sola")
+	_check(not solo.swap_seats(905, 1, 3), "dos sillas vacías no deberían intercambiarse")
+	_check(_last_error_for(905) == "sillas_vacias", "el motivo debería ser sillas_vacias")
+
+	# Nadie más puede reorganizar, y ese es el punto de todo el cambio.
+	_check(not room.swap_seats(902, 0, 1), "un jugador cualquiera no debería reorganizar")
+	_check(_last_error_for(902) == "solo_el_anfitrion", "el motivo debería ser solo_el_anfitrion")
+
+
+## Al terminar la partida la sala NO se cierra sola: sigue viva con la misma gente en las
+## mismas sillas, y cada uno decide. Es lo que permite la revancha sin volver a armarla.
+func _test_play_again() -> void:
+	var room := _new_room()
+	room.add_member(911, "Ana")
+	room.add_member(912, "Beto")
+	var ana_seat: int = room.seat_of(911)
+	var beto_seat: int = room.seat_of(912)
+	room.start_match(911, {"target_score": 50})
+
+	# Se fuerza el final jugando hasta que alguien llegue a la meta.
+	var guard: int = 0
+	while room.phase != Room.Phase.FINISHED:
+		guard += 1
+		if guard > 4000:
+			_fail("la partida no terminó y no se pudo probar la revancha")
+			return
+		# Cerrada una mano hay que pedir seguir: la sala no reparte sola, espera a que
+		# alguien haya visto el conteo.
+		if not _last_pub.is_empty() and bool(_last_pub.hand_over):
+			room.handle_continue(911)
+			continue
+		if not _drive_one_action(room, [911, 912]):
+			room.tick(1.0)
+
+	_check(not room.handle_play(911, 0, "L"), "terminada la partida no se debería poder jugar")
+
+	# Cualquiera puede pedir la revancha, igual que para seguir tras una mano.
+	_check(room.play_again(912), "cualquiera debería poder pedir la revancha")
+	_check(room.phase == Room.Phase.LOBBY, "la sala debería volver al lobby")
+	_check(room.seat_of(911) == ana_seat and room.seat_of(912) == beto_seat, "la revancha debería respetar las sillas")
+	_check(room.member_count() == 2, "no debería irse nadie con la revancha")
+	# Pedirla dos veces no es un error: alguien pudo adelantarse.
+	_check(room.play_again(911), "pedir la revancha dos veces no debería fallar")
+
+	# Y se puede volver a empezar, con marcador limpio.
+	_check(room.start_match(911, {"target_score": 100}), "el anfitrión debería poder arrancar otra vez")
+	_check(int(_last_pub.team_score[0]) == 0 and int(_last_pub.team_score[1]) == 0, "la revancha debería arrancar con el marcador en cero")
+
+
+## Cerrar la sala es cosa del anfitrión, y saca a todos.
+func _test_close_room() -> void:
+	var reg := _new_registry()
+	var code: String = reg.create_room(921, "Ana")
+	reg.join_room(922, code, "Beto")
+
+	_check(not reg.close_room(922), "quien no es anfitrión no debería cerrar la sala")
+	_check(_last_error_for(922) == "solo_el_anfitrion", "el motivo debería ser solo_el_anfitrion")
+	_check(reg.room_count() == 1, "la sala debería seguir viva")
+
+	_sent = []
+	_check(reg.close_room(921), "el anfitrión debería poder cerrar la sala")
+	_check(reg.room_count() == 0, "la sala debería haberse borrado")
+	# A los dos hay que avisarles: si no, se quedan mirando una sala que ya no existe.
+	for peer_id in [921, 922]:
+		var told: bool = false
+		for msg in _messages_for(int(peer_id)):
+			if str(msg.get("type", "")) == Protocol.S_ROOM_CLOSED:
+				told = true
+		_check(told, "al jugador %d no le avisaron que se cerró la sala" % peer_id)
+
+	# Y quedan libres para armar otra.
+	_check(not reg.create_room(921, "Ana").is_empty(), "debería poder crear otra sala")
+	_check(not reg.create_room(922, "Beto").is_empty(), "el invitado también debería poder")
+
+
+## Mueve una acción de un humano si le toca. Devuelve false si no había nada que hacer.
+func _drive_one_action(room: Room, peers: Array) -> bool:
+	if _last_pub.is_empty():
+		return false
+	var current: int = int(_last_pub.current_player)
+	for peer_id in peers:
+		if room.seat_of(int(peer_id)) != current:
+			continue
+		var mine: Dictionary = _mine_by_peer.get(peer_id, {})
+		if mine.is_empty():
+			return false
+		var moves: Array = mine.legal_moves
+		if moves.is_empty():
+			return false
+		var m: Dictionary = moves[0]
+		return room.handle_play(int(peer_id), int(m.idx), str(m.ends[0]))
+	return false

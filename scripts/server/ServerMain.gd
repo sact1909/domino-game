@@ -113,8 +113,17 @@ func _handle_packet(from: int, raw: PackedByteArray) -> void:
 		_error(from, "no_estas_en_una_sala")
 		return
 
-	if msg_type == Protocol.C_SET_SEAT:
-		room.set_seat(from, int(msg.get("seat", -1)))
+	if msg_type == Protocol.C_SWAP_SEATS:
+		room.swap_seats(from, int(msg.get("a", -1)), int(msg.get("b", -1)))
+		return
+
+	if msg_type == Protocol.C_PLAY_AGAIN:
+		room.play_again(from)
+		return
+
+	if msg_type == Protocol.C_CLOSE_ROOM:
+		# Va al registro y no a la sala: cerrarla implica borrarla de las salas vivas.
+		_registry.close_room(from)
 		return
 
 	if msg_type == Protocol.C_START_MATCH:

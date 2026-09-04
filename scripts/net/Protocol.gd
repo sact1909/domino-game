@@ -33,7 +33,13 @@ const VERSION := 1
 # Del cliente al servidor.
 const C_CREATE_ROOM := "create_room"
 const C_JOIN_ROOM := "join_room"
-const C_SET_SEAT := "set_seat"
+## Intercambiar dos sillas. Es la única manera de reorganizar la mesa y solo la usa el
+## anfitrión: con una sola persona repartiendo los equipos no hay nada que negociar ni
+## carrera que perder.
+const C_SWAP_SEATS := "swap_seats"
+## Volver al lobby con la sala intacta, o cerrarla del todo (solo el anfitrión).
+const C_PLAY_AGAIN := "play_again"
+const C_CLOSE_ROOM := "close_room"
 const C_START_MATCH := "start_match"
 const C_PLAY := "play"
 const C_CONTINUE := "continue"
@@ -52,8 +58,17 @@ const S_EVENTS := "events"
 const S_HAND_STARTED := "hand_started"
 const S_HAND_ENDED := "hand_ended"
 const S_MATCH_ENDED := "match_ended"
+const S_ROOM_CLOSED := "room_closed"
 const S_ERROR := "error"
 const S_PONG := "pong"
+
+# Estado de una sala, tal como viaja en el mensaje de lobby. Vive acá porque es
+# vocabulario del PROTOCOLO: el cliente lo necesita para saber cuándo pasar a la mesa, y
+# no debería tener que conocer una clase del servidor para eso. El arnés comprueba que
+# estos valores sigan coincidiendo con los de Room.
+const ROOM_LOBBY := 0
+const ROOM_PLAYING := 1
+const ROOM_FINISHED := 2
 
 
 # ---------------------------------------------------------------------------

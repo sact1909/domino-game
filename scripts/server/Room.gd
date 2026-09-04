@@ -115,40 +115,68 @@ func remove_member(peer_id: int) -> void:
 	broadcast_lobby()
 
 
-## Cambiar de silla en el lobby: es así como se eligen las parejas, porque los puestos
-## enfrentados son compañeros. Solo se puede antes de empezar.
-func set_seat(peer_id: int, seat: int) -> bool:
+## Intercambia lo que hay en dos sillas. Es la ÚNICA manera de reorganizar la mesa, y
+## solo la puede usar el anfitrión.
+##
+## Antes cada quien elegía su lado, y eso traía una carrera fea: dos personas apuntando
+## al mismo sitio y una llevándose un rechazo. Con una sola persona repartiendo no hay
+## nada que negociar, que es como funciona en una mesa de verdad — quien invita dice
+## quién se sienta con quién.
+##
+## Se intercambian SILLAS y no "lados" porque con la mesa llena mover a alguien de lado
+## obliga a que otro salga, y el intercambio dice exactamente quién. Con eso se llega a
+## cualquier reparto de equipos, cosa que "pasar al otro lado" no garantiza.
+func swap_seats(peer_id: int, a: int, b: int) -> bool:
 	if phase != Phase.LOBBY:
 		_error(peer_id, "partida_en_curso")
 		return false
 	if not _seat_of.has(peer_id):
 		_error(peer_id, "no_estas_en_la_sala")
 		return false
-	if seat < 0 or seat >= GameState.SEAT_COUNT:
+	if int(_seat_of[peer_id]) != _host_seat:
+		_error(peer_id, "solo_el_anfitrion")
+		return false
+	if a < 0 or a >= GameState.SEAT_COUNT or b < 0 or b >= GameState.SEAT_COUNT:
 		_error(peer_id, "puesto_invalido")
 		return false
-	if _peer_at.has(seat) and int(_peer_at[seat]) != peer_id:
-		_error(peer_id, "puesto_ocupado")
+	if a == b:
+		return true
+	if not _peer_at.has(a) and not _peer_at.has(b):
+		# Cambiar dos sillas vacías no hace nada, pero conviene decirlo: si no, el
+		# anfitrión cree que tocó algo y no ve ningún cambio.
+		_error(peer_id, "sillas_vacias")
 		return false
 
-	var old_seat: int = int(_seat_of[peer_id])
-	if old_seat == seat:
-		return true
+	var peer_a: int = int(_peer_at.get(a, -1))
+	var peer_b: int = int(_peer_at.get(b, -1))
+	var name_a: String = str(_names.get(a, ""))
+	var name_b: String = str(_names.get(b, ""))
 
-	var player_name: String = str(_names.get(old_seat, ""))
-	_peer_at.erase(old_seat)
-	_names.erase(old_seat)
-	_seat_of[peer_id] = seat
-	_peer_at[seat] = peer_id
-	_names[seat] = player_name
-	if _host_seat == old_seat:
-		_host_seat = seat
+	_peer_at.erase(a)
+	_peer_at.erase(b)
+	_names.erase(a)
+	_names.erase(b)
+	if peer_a >= 0:
+		_peer_at[b] = peer_a
+		_names[b] = name_a
+		_seat_of[peer_a] = b
+	if peer_b >= 0:
+		_peer_at[a] = peer_b
+		_names[a] = name_b
+		_seat_of[peer_b] = a
+
+	if _host_seat == a:
+		_host_seat = b
+	elif _host_seat == b:
+		_host_seat = a
 
 	_touch()
-	# El lobby es una difusión: el mismo mensaje para los cuatro, así que no puede
-	# decirle a cada uno cuál es SU silla. Por eso el puesto nuevo se le manda aparte a
-	# quien se movió, y no se deja que lo deduzca de la lista.
-	_send(peer_id, {"type": Protocol.S_SEAT_ASSIGNED, "seat": seat})
+	# A cada uno que se movió se le dice su silla nueva aparte: el lobby es una difusión,
+	# el mismo mensaje para los cuatro, y no puede decirle a cada uno cuál es la suya.
+	if peer_a >= 0:
+		_send(peer_a, {"type": Protocol.S_SEAT_ASSIGNED, "seat": b})
+	if peer_b >= 0:
+		_send(peer_b, {"type": Protocol.S_SEAT_ASSIGNED, "seat": a})
 	broadcast_lobby()
 	return true
 
@@ -451,3 +479,42 @@ func _lowest_occupied_seat() -> int:
 
 func _touch() -> void:
 	_idle = 0.0
+
+
+# ===========================================================================
+# Lados, revancha y cierre
+# ===========================================================================
+## Volver al lobby con la sala intacta: las mismas personas en las mismas sillas.
+##
+## Alcanza con que UNO lo pida, igual que para seguir tras una mano: esperar a los cuatro
+## deja la sala colgada en cuanto alguien se distrae, y quien todavía esté mirando el
+## resultado se entera por la difusión del lobby.
+func play_again(peer_id: int) -> bool:
+	if not _seat_of.has(peer_id):
+		_error(peer_id, "no_estas_en_la_sala")
+		return false
+	if phase == Phase.LOBBY:
+		# Alguien se adelantó. No es un error: solo hay que ponerlo al día.
+		broadcast_lobby()
+		return true
+	if phase != Phase.FINISHED:
+		_error(peer_id, "partida_en_curso")
+		return false
+
+	phase = Phase.LOBBY
+	# La sesión se suelta entera. Reusarla arrastraría el marcador y el reparto de la
+	# partida anterior, y esto es una partida nueva con la misma gente.
+	_session = null
+	_pending = {}
+	_acting_peer = -1
+	_touch()
+	broadcast_lobby()
+	return true
+
+
+## Avisa a todos que la sala se cierra. Quien la borra es el registro, que es el que
+## lleva la cuenta de las salas vivas.
+func announce_closed() -> void:
+	_broadcast({"type": Protocol.S_ROOM_CLOSED})
+
+

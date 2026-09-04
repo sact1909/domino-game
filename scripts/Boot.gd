@@ -14,15 +14,18 @@ extends Node
 ##   godot --headless -- --test
 ##
 ## Con "--test-net" corre la prueba de red, que necesita un servidor escuchando aparte.
+## Con "--online" arranca directo en el lobby, para no tener que pasar por la pantalla
+## de configuración local cada vez que se prueba con dos ventanas.
 ##
 ## Se usa una escena de arranque (en vez de ramificar dentro del juego) porque el
 ## escenario principal es un ajuste del proyecto, no del preset de exportación: así
-## el mismo binario sirve para las cuatro cosas.
+## el mismo binario sirve para todas.
 
 const GAME_SCENE := "res://scenes/Main.tscn"
 const SERVER_SCENE := "res://scenes/Server.tscn"
 const TEST_SCENE := "res://scenes/Test.tscn"
 const TEST_NET_SCENE := "res://scenes/NetTest.tscn"
+const LOBBY_SCENE := "res://scenes/Lobby.tscn"
 
 
 func _ready() -> void:
@@ -31,6 +34,10 @@ func _ready() -> void:
 		scene = TEST_SCENE
 	elif _has_flag("--test-net"):
 		scene = TEST_NET_SCENE
+	elif _has_flag("--online"):
+		# Atajo para probar: se salta la pantalla de configuración local y va directo al
+		# lobby. Abrir dos ventanas para jugar entre ellas se hace muy seguido.
+		scene = LOBBY_SCENE
 	elif _is_server_mode():
 		scene = SERVER_SCENE
 	# Se aplaza un frame a propósito: dentro de _ready() el árbol todavía está

@@ -40,6 +40,22 @@ signal hand_ended(closing: Dictionary, reveal: Dictionary)
 ## Una pareja llegó a la meta. Lo decide la autoridad, no la pantalla.
 signal match_ended(winner_team: int)
 
+## La autoridad rechazó algo. El motivo viene como clave y no como texto: el idioma se
+## resuelve en la pantalla, igual que con los eventos. Jugando en local casi no se usa
+## —un rechazo llega como evento "rejected"—, pero está en el contrato porque en red es
+## la respuesta normal a un mensaje que no correspondía, y la pantalla tiene que saber
+## atenderlo sin preguntar en qué modo está.
+signal server_error(reason: String)
+
+## Quién está sentado en cada puesto: el nombre si es una persona, cadena vacía si la
+## silla la juega la máquina. Es información de la MESA, no de las reglas, y la pantalla
+## la necesita para no etiquetar de "IA" al amigo que tiene enfrente.
+signal seats_changed(names: Array)
+
+## Se perdió la conexión con la autoridad. En local no puede pasar; en red sí, y hay que
+## decirlo, porque si no la mesa se queda quieta y parece que el juego se colgó.
+signal disconnected()
+
 # ---------------------------------------------------------------------------
 # Del cliente al servidor
 # ---------------------------------------------------------------------------
@@ -112,3 +128,15 @@ static func default_config() -> Dictionary:
 		"bonus_capicua": 30,
 		"bonus_pase_salida": 30,
 	}
+
+
+func _emit_server_error(reason: String) -> void:
+	server_error.emit(reason)
+
+
+func _emit_disconnected() -> void:
+	disconnected.emit()
+
+
+func _emit_seats_changed(names: Array) -> void:
+	seats_changed.emit(names)

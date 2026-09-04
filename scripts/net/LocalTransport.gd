@@ -42,6 +42,9 @@ func _init(human_seat: int = 0) -> void:
 # ===========================================================================
 func begin() -> void:
 	_emit_seat_assigned(_human_seat)
+	# Los otros tres puestos son de la máquina, así que van sin nombre. Se manda igual
+	# para que la pantalla no tenga que suponer nada según el modo.
+	_emit_seats_changed(["", "", "", ""])
 	# Un primer snapshot de mesa vacía para que la pantalla tenga de dónde dibujar
 	# antes del primer reparto. En red es lo que manda el servidor al sentarte.
 	_push_snapshot()
