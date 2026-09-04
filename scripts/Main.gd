@@ -95,6 +95,12 @@ var spin_pase_salida: SpinBox
 var end_choice_popup: PanelContainer
 var pending_hand_idx: int = -1
 
+# Si se mandó una jugada y todavía no llegó el estado nuevo. Jugando en local se aclara
+# en el mismo instante, pero en red pasan cientos de milisegundos con la mano todavía
+# habilitada: un segundo clic manda una jugada duplicada que el servidor rechaza, y el
+# jugador ve un error que no entiende. Mientras esto está puesto, la mano se apaga.
+var awaiting_play: bool = false
+
 # Aviso flotante (pases, bonificaciones) y las bolitas de turno de cada puesto.
 var toast_panel: PanelContainer
 var toast_label: Label
@@ -757,6 +763,7 @@ func _on_seat_assigned(seat: int) -> void:
 func _on_snapshot(new_pub: Dictionary, new_mine: Dictionary) -> void:
 	pub = new_pub
 	mine = new_mine
+	awaiting_play = false
 	_render_all()
 
 
@@ -820,6 +827,10 @@ func _handle_event(e: Dictionary) -> void:
 			# se colgó.
 			if e.seat == local_seat:
 				_show_toast(_rejection_text(str(e.reason)))
+				# Un rechazo no trae snapshot, así que hay que desbloquear y redibujar
+				# acá: de lo contrario la mano se quedaría apagada para siempre.
+				awaiting_play = false
+				_render_own_hand()
 
 
 # El evento trae el tipo de bonificación y quién la provocó; el texto se redacta
@@ -1031,6 +1042,9 @@ func _on_hand_tile_pressed(idx: int) -> void:
 	# contestarla después llegaba como una jugada fuera de turno.
 	if pending_hand_idx >= 0:
 		return
+	# Con una jugada en vuelo tampoco: mandar otra sería una jugada duplicada.
+	if awaiting_play:
+		return
 
 	var moves: Array = mine.legal_moves
 	var chosen: Variant = null
@@ -1042,7 +1056,7 @@ func _on_hand_tile_pressed(idx: int) -> void:
 		return
 	if pub.board.is_empty() or chosen.ends.size() == 1:
 		var e: String = chosen.ends[0]
-		transport.request_play(idx, e)
+		_send_play(idx, e)
 	else:
 		_show_end_choice_popup(idx)
 
@@ -1065,7 +1079,7 @@ func _on_end_choice(end: String) -> void:
 		return
 	var idx: int = pending_hand_idx
 	_cancel_end_choice()
-	transport.request_play(idx, end)
+	_send_play(idx, end)
 
 
 ## Cierra la elección de punta y olvida la ficha pendiente.
@@ -1318,7 +1332,7 @@ func _render_own_hand() -> void:
 	var legal_by_idx := {}
 	# Con la elección de punta abierta la mano queda apagada: la decisión pendiente es
 	# esa, y se ve que no se puede tocar otra ficha en vez de que el clic no haga nada.
-	if phase == Phase.PLAYING and pub.current_player == local_seat and pending_hand_idx < 0:
+	if phase == Phase.PLAYING and pub.current_player == local_seat and pending_hand_idx < 0 and not awaiting_play:
 		for m in mine.legal_moves:
 			legal_by_idx[m.idx] = true
 
@@ -1411,3 +1425,12 @@ func _rejection_text(reason: String) -> String:
 		"tiene_jugada":
 			return "Tienes ficha jugable: debes jugarla"
 	return "Esa jugada no se pudo aplicar"
+
+
+## Manda la jugada y apaga la mano hasta que el servidor conteste. El bloqueo se pone
+## ANTES de mandar y no después, porque jugando en local la respuesta llega dentro de la
+## misma llamada: puesto después, quedaría encendido para siempre.
+func _send_play(idx: int, end: String) -> void:
+	awaiting_play = true
+	_render_own_hand()
+	transport.request_play(idx, end)

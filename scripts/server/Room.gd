@@ -145,6 +145,10 @@ func set_seat(peer_id: int, seat: int) -> bool:
 		_host_seat = seat
 
 	_touch()
+	# El lobby es una difusión: el mismo mensaje para los cuatro, así que no puede
+	# decirle a cada uno cuál es SU silla. Por eso el puesto nuevo se le manda aparte a
+	# quien se movió, y no se deja que lo deduzca de la lista.
+	_send(peer_id, {"type": Protocol.S_SEAT_ASSIGNED, "seat": seat})
 	broadcast_lobby()
 	return true
 

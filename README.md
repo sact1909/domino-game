@@ -108,12 +108,14 @@ scripts/Main.gd            Interfaz: dibuja y manda acciones (no conoce las regl
 scripts/net/Transport.gd   Contrato entre la interfaz y quien tiene la autoridad
 scripts/net/LocalTransport.gd  Autoridad en este proceso: ritmo, IA y un solo puesto
 scripts/net/Protocol.gd    Formato de los mensajes y traducción a/desde JSON
+scripts/net/WsClientTransport.gd  El mismo contrato, pero hablando con el servidor
 scripts/server/ServerMain.gd  Puerto, JSON y enrutado (el borde del sistema)
 scripts/server/RoomCode.gd Alfabeto y generación de códigos de sala
 scripts/server/Room.gd     Una sala: cuatro puestos alrededor de una GameSession
 scripts/server/RoomRegistry.gd  Todas las salas vivas, y su recolección al vencer
 scripts/tests/RulesTest.gd Arnés de reglas y de la secuencia de la sesión
 scripts/tests/ServerTest.gd  Arnés de salas, códigos y protocolo (sin abrir puertos)
+scripts/tests/NetTest.gd   Prueba de red con dos clientes reales (necesita el servidor)
 docker/Dockerfile          Build del servidor dedicado
 DominoTiles/*.png          Las 28 imágenes de fichas (128x256 cada una)
 ```
@@ -333,10 +335,39 @@ Dos detalles del contrato que son de seguridad, no de estilo:
 El destape de fin de mano viaja únicamente dentro de `hand_ended`, junto con el
 cierre. La interfaz no lo puede pedir antes porque no tiene a quién pedírselo.
 
-Hoy la implementación es `LocalTransport`, que corre las reglas y la IA en este mismo
-proceso: es la partida contra la máquina de siempre. Cuando entre el transporte de
-red, va a implementar el mismo contrato hablando por un socket y `Main.gd` no se
-toca.
+Hay dos implementaciones del mismo contrato, y la pantalla no distingue una de otra:
+
+| | Quién decide | Ritmo | Destinatarios |
+|---|---|---|---|
+| `LocalTransport` | Este proceso | Pausa de 0.9 s | Uno |
+| `WsClientTransport` | El servidor, al otro lado de un socket | El del servidor | Cuatro |
+
+`WsClientTransport` es notable por lo que **no** hace: no aplica reglas, no valida
+jugadas, no decide turnos, no reparte, y de las fichas ajenas no recibe ninguna.
+Empaqueta lo que la pantalla pide y desempaqueta lo que baja. Modificarlo no sirve de
+nada, porque el servidor no le cree nada.
+
+Además del contrato expone la parte de **sala** —conectar, crear, entrar, elegir
+silla—, que en el modo local no existe porque no hay a quién esperar. Eso lo usa la
+pantalla del lobby; la de juego sigue viendo solo el contrato.
+
+#### Dos cosas que aparecieron al conectar de verdad
+
+**JSON tiene un solo tipo numérico.** Un puesto `2` vuelve como `2.0`, y en GDScript
+indexar un arreglo con un flotante es un error — justo el uso que tienen esos números
+(`SEAT_NAMES[pub.current_player]`). Se arregla en `Protocol.to_ints()`, no en la
+pantalla: la pantalla no debería enterarse nunca de que el dato pasó por un cable, y
+poner `int()` en cada uso son decenas de lugares donde olvidarse de uno. Vale porque en
+estas vistas no hay ni un número fraccionario, y el arnés comprueba que siga siendo
+cierto: si alguien agrega un campo con decimales, la prueba avisa que necesita una
+excepción ahí.
+
+**Una jugada tarda en viajar.** Entre el clic y el estado nuevo pasan cientos de
+milisegundos con la mano todavía habilitada, así que un segundo clic manda una jugada
+duplicada. El servidor la rechaza —eso está bien— pero el jugador ve un error que no
+entiende. La pantalla apaga la mano desde que manda hasta que le contestan. Salió a la
+luz en la prueba de red: mandaba 67 jugadas donde el máximo posible eran 28, y ahora la
+prueba falla si se pasa de ese techo.
 
 ### Perspectiva: el jugador local siempre abajo
 
@@ -448,6 +479,36 @@ con gente aguanta.
 
 Sale con código 0 si todo pasa y 1 si algo falla, así sirve tal cual en CI. Cuando algo
 falla informa la semilla del reparto, para poder reproducir esa mano exacta.
+
+### La prueba de red
+
+Necesita un servidor escuchando, así que va aparte: un arnés que depende de otro
+proceso no sirve para CI. Dos terminales:
+
+```bash
+godot --headless -- --server
+```
+
+```bash
+godot --headless -- --test-net
+```
+
+Levanta **dos clientes de verdad, con sockets de verdad**, y hace lo que harían dos
+personas: uno crea la sala, el otro entra con el código escrito a mano, se cambia de
+silla para quedar de pareja, y juegan una **partida completa** hasta que alguien llega a
+la meta, usando solo lo que les llegó. Los otros dos puestos los mueve la IA del
+servidor.
+
+La meta es 50 —el mínimo que acepta el servidor— a propósito: así la partida termina en
+dos o tres manos y `match_ended` **queda probado**. Con metas altas la prueba tardaría
+minutos y ese mensaje, que es el que dispara la pantalla de fin de partida, no llegaría
+nunca. Al final se comprueba que la pareja ganadora de verdad haya alcanzado la meta
+según el marcador que ya viajó.
+
+Comprueba lo que ningún arnés en un solo proceso puede: que el JSON sobreviva el viaje,
+que los puestos los asigne el servidor, que a cada cliente le lleguen **solo** sus
+fichas, que jugar fuera de turno rebote, y que los números vuelvan como enteros. Con
+`--server-url=wss://...` apunta a otro servidor, por ejemplo el desplegado.
 
 ## Cómo se dibuja el tablero
 

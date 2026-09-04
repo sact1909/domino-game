@@ -45,6 +45,7 @@ const C_PING := "ping"
 # nada, solo desempacar.
 const S_HELLO := "hello"
 const S_ROOM_JOINED := "room_joined"
+const S_SEAT_ASSIGNED := "seat_assigned"
 const S_LOBBY := "lobby"
 const S_SNAPSHOT := "snapshot"
 const S_EVENTS := "events"
@@ -115,8 +116,8 @@ static func encode_public_view(pub: Dictionary) -> Dictionary:
 
 
 static func decode_public_view(raw: Dictionary) -> Dictionary:
-	var out: Dictionary = raw.duplicate()
-	out["board"] = decode_tiles(raw.get("board", []))
+	var out: Dictionary = to_ints(raw)
+	out["board"] = decode_tiles(out.get("board", []))
 	return out
 
 
@@ -127,8 +128,8 @@ static func encode_private_view(mine: Dictionary) -> Dictionary:
 
 
 static func decode_private_view(raw: Dictionary) -> Dictionary:
-	var out: Dictionary = raw.duplicate()
-	out["tiles"] = decode_tiles(raw.get("tiles", []))
+	var out: Dictionary = to_ints(raw)
+	out["tiles"] = decode_tiles(out.get("tiles", []))
 	return out
 
 
@@ -142,9 +143,9 @@ static func encode_reveal(reveal: Dictionary) -> Dictionary:
 
 
 static func decode_reveal(raw: Dictionary) -> Dictionary:
-	var out: Dictionary = raw.duplicate()
+	var out: Dictionary = to_ints(raw)
 	var hands: Array = []
-	for hand in raw.get("hands", []):
+	for hand in out.get("hands", []):
 		hands.append(decode_tiles(hand))
 	out["hands"] = hands
 	return out
@@ -181,7 +182,39 @@ static func encode_event(e: Dictionary) -> Dictionary:
 
 
 static func decode_event(raw: Dictionary) -> Dictionary:
-	var out: Dictionary = raw.duplicate()
-	if raw.has("tile"):
-		out["tile"] = decode_tile(raw.tile)
+	var out: Dictionary = to_ints(raw)
+	if out.has("tile"):
+		out["tile"] = decode_tile(out.tile)
 	return out
+
+
+# ---------------------------------------------------------------------------
+# Números
+# ---------------------------------------------------------------------------
+## JSON tiene un solo tipo numérico, así que al volver TODO llega como flotante: un
+## puesto 2 vuelve como 2.0. Eso rompe de una manera fea, porque en GDScript indexar
+## un arreglo con un flotante es un error, y las vistas están llenas de números que se
+## usan justo así (`SEAT_NAMES[pub.current_player]`, `pub.hand_counts[seat]`).
+##
+## Se arregla acá y no en la pantalla: la pantalla no debería enterarse nunca de que el
+## dato pasó por un cable, y ponerle int() a cada uso son decenas de lugares donde
+## olvidarse de uno.
+##
+## Vale porque en estas vistas y eventos NO hay ni un número fraccionario: son puestos,
+## puntos, índices y cantidades. Si alguna vez se agrega uno, hay que exceptuarlo acá —
+## y el arnés lo avisa, porque comprueba que en lo codificado no viaje ningún flotante.
+static func to_ints(value: Variant) -> Variant:
+	var kind: int = typeof(value)
+	if kind == TYPE_FLOAT:
+		return int(value)
+	if kind == TYPE_DICTIONARY:
+		var out: Dictionary = {}
+		for key in (value as Dictionary).keys():
+			out[key] = to_ints((value as Dictionary)[key])
+		return out
+	if kind == TYPE_ARRAY:
+		var list: Array = []
+		for entry in value:
+			list.append(to_ints(entry))
+		return list
+	return value

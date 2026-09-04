@@ -537,14 +537,24 @@ func _find_illegal_index(peer_id: int) -> int:
 	return -1
 
 
-## Recorre todo lo codificado buscando objetos. Se hace así, y no mirando las claves
-## conocidas, para que si mañana alguien le agrega a una vista un campo con fichas
-## adentro, la prueba lo cace antes de que el servidor mande algo ilegible.
+## Recorre todo lo codificado buscando dos cosas que no deben viajar. Se hace así, y
+## no mirando las claves conocidas, para que si mañana alguien le agrega un campo a una
+## vista, la prueba lo cace antes de que rompa algo en producción.
+##
+## Objetos: JSON no los puede mandar, así que el mensaje saldría ilegible.
+##
+## Flotantes: al volver, el decodificador convierte TODO número a entero, porque JSON
+## manda los enteros como flotantes y la pantalla los usa de índice. Hoy en estas
+## vistas no hay ni un número fraccionario, y esa conversión es exacta. El día que se
+## agregue uno, lo destruiría en silencio — así que se frena acá.
 func _check_json_safe(value: Variant, what: String) -> void:
 	checks += 1
 	var kind: int = typeof(value)
 	if kind == TYPE_OBJECT:
 		_fail("%s trae un objeto (%s) y JSON no lo puede mandar" % [what, str(value)])
+		return
+	if kind == TYPE_FLOAT:
+		_fail("%s trae un flotante (%s): Protocol.to_ints() lo redondearía al volver, así que necesita una excepción ahí" % [what, str(value)])
 		return
 	if kind == TYPE_DICTIONARY:
 		var dict: Dictionary = value
