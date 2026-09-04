@@ -1,0 +1,19 @@
+# La caché de importación es específica de cada máquina (trae rutas absolutas) y
+# el build la regenera con "godot --headless --import".
+.godot/
+
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Salidas de build
+build/
+builds/
+export/
+exports/
+*.exe
+*.pck
+*.zip
+
+README.md

@@ -93,12 +93,75 @@ de la mesa.
 ## Estructura del proyecto
 
 ```
-project.godot          Configuración (ventana 1280x900, escena principal)
-scenes/Main.tscn       Escena raíz (solo el nodo raíz; la interfaz se crea por código)
-scripts/Domino.gd      Clase de ficha: valores, dobles, puntos y su textura
-scripts/Main.gd        Toda la lógica del juego y la interfaz
-DominoTiles/*.png      Las 28 imágenes de fichas (128x256 cada una)
+project.godot              Configuración (ventana 1280x900, escena principal)
+scenes/Boot.tscn           Punto de entrada: decide entre juego y servidor
+scenes/Main.tscn           El juego (la interfaz se crea por código)
+scenes/Server.tscn         El servidor dedicado
+scripts/Boot.gd            Detección de modo servidor
+scripts/Domino.gd          Clase de ficha: valores, dobles, puntos y su textura
+scripts/Main.gd            Toda la lógica del juego y la interfaz
+scripts/server/ServerMain.gd  Servidor WebSocket
+docker/Dockerfile          Build del servidor dedicado
+DominoTiles/*.png          Las 28 imágenes de fichas (128x256 cada una)
 ```
+
+## Servidor dedicado (en construcción)
+
+El mismo binario sirve para las dos cosas: `scenes/Boot.tscn` arranca el juego con
+interfaz, salvo que detecte modo servidor (plantilla *dedicated server* o el
+argumento `--server`).
+
+Por ahora el servidor solo valida la cadena de despliegue: acepta conexiones
+WebSocket, saluda al conectar y responde a un `ping`. Las salas con código y el
+juego en red vienen después.
+
+**Probar en local**, sin exportar nada:
+
+```bash
+godot --headless -- --server
+```
+
+**Construir la imagen:**
+
+```bash
+docker build -f docker/Dockerfile -t domino-server .
+```
+
+**Correrla:**
+
+```bash
+docker run --rm -p 8090:8090 domino-server
+```
+
+### Puerto
+
+El servidor escucha en el puerto de la variable de entorno `PORT`, y usa 8090 si no
+está definida. Para correrlo en otro puerto:
+
+```bash
+docker run --rm -p 3000:3000 -e PORT=3000 domino-server
+```
+
+Si `PORT` trae un valor que no es número, el servidor avisa en el log y cae al
+puerto por defecto — así el problema se ve, en vez de que el proxy no encuentre a
+nadie escuchando.
+
+### Notas de despliegue en Coolify
+
+- Build pack **Dockerfile**, ruta `docker/Dockerfile`, contexto en la raíz del repo.
+- Definir la variable de entorno **`PORT`** con el puerto que quieras y asegurarte de
+  que el proxy apunte al mismo. Por defecto es 8090, elegido a propósito para no
+  chocar con el 8080 que suelen usar otros servicios.
+- **Health check a nivel TCP, no HTTP:** un servidor WebSocket rechaza un `GET`
+  normal, así que un chequeo HTTP daría falsos negativos aunque el servidor esté
+  sano.
+- **Una sola instancia.** Las salas viven en memoria: si se escala horizontalmente,
+  un jugador que caiga en otra instancia no encontraría la sala.
+- Los redespliegues reinician el contenedor y se pierden las partidas en curso.
+- `export_presets.cfg` **debe estar versionado** — el build lo necesita para
+  exportar dentro del contenedor. El preset se llama `Linux` y tiene
+  `dedicated_server=true`; si se le cambia el nombre, hay que actualizar el
+  `ARG EXPORT_PRESET` del Dockerfile.
 
 ### Nombres de las imágenes de fichas
 

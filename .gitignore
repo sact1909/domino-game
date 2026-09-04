@@ -20,10 +20,10 @@
 *.dmg
 *.app
 
-# Los presets de exportación pueden contener rutas locales y claves de firma
-# (keystore, contraseñas). Si en tu caso no guardan nada sensible, puedes
-# quitar esta línea para compartirlos con el equipo.
-export_presets.cfg
+# OJO: export_presets.cfg SÍ se versiona a propósito. El build de Docker exporta el
+# proyecto dentro del contenedor y necesita el preset "Linux Server". Si algún día
+# se agrega un preset con claves de firma (keystore de Android, contraseñas), hay
+# que sacarlas de ahí — nunca ignorar el archivo completo, o se rompe el despliegue.
 
 # Android (si algún día se agrega el template de exportación)
 /android/
