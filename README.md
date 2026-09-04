@@ -44,23 +44,29 @@ Basadas en la guía del dominó dominicano (formato estándar de 4 jugadores):
 | Si no puedes jugar | Se pasa automáticamente (no hay que pulsar nada) |
 | Dobles | Se colocan cruzados respecto a la cadena |
 | Fin de mano | Quien coloca su última ficha gana la mano |
-| Puntuación | La pareja ganadora suma los puntos de las fichas que le quedaron a la pareja contraria |
+| Puntuación | La pareja ganadora suma los puntos de **todas** las fichas que quedaron en la mesa, las de su propia pareja incluidas |
 | Meta | 100, 150 o 200 puntos (se elige antes de empezar) |
 
 ### Tranque
 
-Cuando nadie puede continuar (cuatro pases seguidos):
+Cuando nadie puede continuar (cuatro pases seguidos), la mano se decide **cara a
+cara** entre dos jugadores:
 
-1. Se suman los puntos de las fichas que le quedan a cada pareja.
-2. Gana la mano la pareja con **menos** puntos.
-3. La pareja ganadora suma los puntos de la pareja perdedora.
-4. **Empate:** gana la pareja que tiene la mano (la del jugador que salió en esa mano).
+1. Se toma a quien puso la última ficha (el que trancó) y al jugador que le seguía
+   en el turno. Como los puestos se alternan, esos dos son siempre de parejas
+   contrarias.
+2. Se comparan los puntos que le quedan a esos dos: gana la mano la pareja de quien
+   tenga **menos** puntos.
+3. Esa pareja suma los puntos de **todas** las fichas que quedaron en la mesa —
+   incluidas las dos manos que se compararon y las de su propia pareja.
+4. **Empate entre los dos:** gana la pareja que tiene la mano (la del jugador que
+   salió en esa mano).
 5. En la mano siguiente sale, dentro de la pareja ganadora, quien se quedó con menos
    puntos en la mano.
 
-Los puntos 3 y 5 son **reglas de casa**: la guía deja esos detalles a criterio de la
-mesa, así que se eligió una convención razonable. Si tu mesa lo hace distinto, se
-cambia en `_resolve_tranque()`.
+Los puntos 4 y 5 son **reglas de casa** que la guía deja a criterio de la mesa, así
+que se eligió una convención razonable. Si tu mesa lo hace distinto, se cambian en
+`_resolve_tranque()`.
 
 ## Estructura del proyecto
 

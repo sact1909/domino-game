@@ -33,6 +33,9 @@ var right_end: int = -1
 var current_player: int = 0
 var lead_player: int = 0
 var consecutive_passes: int = 0
+# Quién puso la última ficha: en un tranque, sus fichas se comparan con las del
+# jugador que le seguía en el turno para decidir quién gana la mano.
+var last_player_to_play: int = -1
 var is_first_hand_of_game: bool = true
 var must_open_with_double_six: bool = false
 # Índice dentro de "board" de la ficha inicial (el ancla fija de la hilera). Todo lo
@@ -503,6 +506,7 @@ func start_new_hand() -> void:
 	right_end = -1
 	opening_tile_index = -1
 	consecutive_passes = 0
+	last_player_to_play = -1
 	phase = Phase.PLAYING
 
 	if is_first_hand_of_game:
@@ -617,6 +621,7 @@ func _play_tile(seat: int, idx: int, end: String) -> void:
 
 	must_open_with_double_six = false
 	consecutive_passes = 0
+	last_player_to_play = seat
 	_log("%s jugó [b]%s[/b]." % [SEAT_NAMES[seat], str(t)])
 	_render_all()
 	_check_hand_end(seat)
@@ -646,81 +651,98 @@ func _check_hand_end(seat: int) -> void:
 # ===========================================================================
 # Fin de mano y puntuación
 # ===========================================================================
+func _seat_pips(seat: int) -> int:
+	var total := 0
+	for t in hands[seat]:
+		total += t.pips()
+	return total
+
+
 func _team_pip_totals() -> Array:
 	var totals := [0, 0]
 	for s in range(4):
-		for t in hands[s]:
-			totals[TEAM_OF_SEAT[s]] += t.pips()
+		totals[TEAM_OF_SEAT[s]] += _seat_pips(s)
 	return totals
 
 
+# Regla de la mesa: la pareja ganadora suma los puntos de TODAS las fichas que
+# quedaron sobre la mesa, las de la propia pareja incluidas — no solo las del rival.
 func _hand_won_by_domino(winner_seat: int) -> void:
 	phase = Phase.HAND_OVER
 	var winner_team: int = TEAM_OF_SEAT[winner_seat]
-	var loser_team: int = 1 - winner_team
 	var totals: Array = _team_pip_totals()
-	var pts: int = totals[loser_team]
+	var pts: int = totals[0] + totals[1]
 	team_score[winner_team] += pts
 	_log("[b]%s[/b] colocó su última ficha. ¡Equipo %s gana la mano! (+%d puntos)" % [SEAT_NAMES[winner_seat], TEAM_NAMES[winner_team], pts])
 	lead_player = winner_seat
 	_render_all()
 	_show_hand_result(
 		"¡Equipo %s gana la mano!" % TEAM_NAMES[winner_team],
-		"%s colocó su última ficha. Se cuentan las fichas que le quedaron a la pareja contraria." % SEAT_NAMES[winner_seat],
-		false,
+		"%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % SEAT_NAMES[winner_seat],
+		{},
 		winner_team,
 		totals,
 		pts
 	)
 
 
+# Regla de la mesa: el tranque se decide cara a cara entre quien puso la última
+# ficha y el jugador que le seguía en el turno (siempre de la pareja contraria,
+# porque los puestos se alternan). Gana la mano la pareja de quien tenga menos
+# puntos, y los puntos que suma son los de TODAS las fichas de la mesa, incluidas
+# las dos manos que se compararon.
 func _resolve_tranque() -> void:
 	phase = Phase.HAND_OVER
-	var team_pips: Array = _team_pip_totals()
+	var totals: Array = _team_pip_totals()
+	var pts: int = totals[0] + totals[1]
 
-	var winner_team: int
-	if team_pips[0] < team_pips[1]:
-		winner_team = 0
-	elif team_pips[1] < team_pips[0]:
-		winner_team = 1
-	else:
-		winner_team = TEAM_OF_SEAT[lead_player]
+	var closer: int = last_player_to_play if last_player_to_play >= 0 else lead_player
+	var challenger: int = (closer + 1) % 4
+	var closer_pips: int = _seat_pips(closer)
+	var challenger_pips: int = _seat_pips(challenger)
 
-	var loser_team: int = 1 - winner_team
-	var pts: int = team_pips[loser_team]
-	team_score[winner_team] += pts
-
+	var winner_seat: int
 	var subtitle: String
-	if team_pips[0] == team_pips[1]:
-		subtitle = "Empate en puntos (%d - %d): gana el equipo %s por tener la mano." % [team_pips[0], team_pips[1], TEAM_NAMES[winner_team]]
-		_log("¡Tranque! Empate en puntos (%d - %d). Gana el equipo %s por tener la mano. (+%d puntos)" % [team_pips[0], team_pips[1], TEAM_NAMES[winner_team], pts])
+	if closer_pips < challenger_pips:
+		winner_seat = closer
+		subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips, SEAT_NAMES[closer]]
+	elif challenger_pips < closer_pips:
+		winner_seat = challenger
+		subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips, SEAT_NAMES[challenger]]
 	else:
-		subtitle = "Nadie podía jugar. Gana la pareja con menos puntos: %d contra %d." % [team_pips[winner_team], team_pips[loser_team]]
-		_log("¡Tranque! Equipo %s gana con menos puntos (%d contra %d). (+%d puntos)" % [TEAM_NAMES[winner_team], team_pips[winner_team], team_pips[loser_team], pts])
+		# Empate entre los dos: se resuelve a favor de la pareja que tiene la mano.
+		winner_seat = closer if TEAM_OF_SEAT[closer] == TEAM_OF_SEAT[lead_player] else challenger
+		subtitle = "%s trancó el juego. Empate con %s (%d - %d): gana la pareja que tiene la mano." % [SEAT_NAMES[closer], SEAT_NAMES[challenger], closer_pips, challenger_pips]
+
+	var winner_team: int = TEAM_OF_SEAT[winner_seat]
+	team_score[winner_team] += pts
+	_log("¡Tranque! %s (%d) contra %s (%d): gana el equipo %s. (+%d puntos)" % [SEAT_NAMES[closer], closer_pips, SEAT_NAMES[challenger], challenger_pips, TEAM_NAMES[winner_team], pts])
 
 	# Dentro del equipo ganador, sale en la próxima mano quien se quedó con menos puntos en la mano.
 	var best_seat := -1
 	var best_pips := 9999
 	for s in range(4):
 		if TEAM_OF_SEAT[s] == winner_team:
-			var sp := 0
-			for t in hands[s]:
-				sp += t.pips()
+			var sp: int = _seat_pips(s)
 			if sp < best_pips:
 				best_pips = sp
 				best_seat = s
 	lead_player = best_seat
 
 	_render_all()
-	_show_hand_result("¡Tranque!", subtitle, true, winner_team, team_pips, pts)
+	var notes := {
+		closer: "trancó",
+		challenger: "seguía",
+	}
+	_show_hand_result("¡Tranque!", subtitle, notes, winner_team, totals, pts)
 
 
 # ===========================================================================
 # Pantalla de fin de mano
 # ===========================================================================
-# En un tranque se muestran las fichas de las DOS parejas (porque se comparan); si
-# alguien se pegó, solo las de la pareja contraria (son las que se cuentan).
-func _show_hand_result(title: String, subtitle: String, is_tranque: bool, winner_team: int, team_pips: Array, pts: int) -> void:
+# Siempre se muestran las cuatro manos, porque todas las fichas que quedaron suman.
+# "notes" marca jugadores concretos (en el tranque, quién trancó y quién seguía).
+func _show_hand_result(title: String, subtitle: String, notes: Dictionary, winner_team: int, team_pips: Array, pts: int) -> void:
 	pending_winner_team = winner_team
 
 	for c in hand_result_content.get_children():
@@ -741,16 +763,17 @@ func _show_hand_result(title: String, subtitle: String, is_tranque: bool, winner
 	sub_lbl.add_theme_font_size_override("font_size", 14)
 	hand_result_content.add_child(sub_lbl)
 
-	if is_tranque:
-		for team in [0, 1]:
-			var mark: String = " ← menos puntos" if team == winner_team and team_pips[0] != team_pips[1] else ""
-			hand_result_content.add_child(_make_team_summary(team, team_pips[team], "Equipo %s%s" % [TEAM_NAMES[team], mark]))
-	else:
-		var loser_team: int = 1 - winner_team
-		hand_result_content.add_child(_make_team_summary(loser_team, team_pips[loser_team], "Fichas que se cuentan — equipo %s" % TEAM_NAMES[loser_team]))
+	var count_head := Label.new()
+	count_head.text = "Fichas que quedaron en la mesa (todas se cuentan)"
+	count_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	count_head.add_theme_font_size_override("font_size", 14)
+	hand_result_content.add_child(count_head)
+
+	for team in [0, 1]:
+		hand_result_content.add_child(_make_team_summary(team, team_pips[team], "Equipo %s" % TEAM_NAMES[team], notes))
 
 	var pts_lbl := Label.new()
-	pts_lbl.text = "Equipo %s suma %d puntos" % [TEAM_NAMES[winner_team], pts]
+	pts_lbl.text = "Equipo %s suma %d puntos  (%d + %d)" % [TEAM_NAMES[winner_team], pts, team_pips[0], team_pips[1]]
 	pts_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	pts_lbl.add_theme_font_size_override("font_size", 20)
 	pts_lbl.add_theme_color_override("font_color", Color(0.6, 1, 0.6))
@@ -765,7 +788,7 @@ func _show_hand_result(title: String, subtitle: String, is_tranque: bool, winner
 	hand_result_overlay.visible = true
 
 
-func _make_team_summary(team: int, total: int, header: String) -> VBoxContainer:
+func _make_team_summary(team: int, total: int, header: String, notes: Dictionary) -> VBoxContainer:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 4)
 
@@ -777,7 +800,7 @@ func _make_team_summary(team: int, total: int, header: String) -> VBoxContainer:
 
 	for s in range(4):
 		if TEAM_OF_SEAT[s] == team:
-			box.add_child(_make_seat_summary_row(s))
+			box.add_child(_make_seat_summary_row(s, notes.get(s, "")))
 
 	var total_lbl := Label.new()
 	total_lbl.text = "Total del equipo: %d" % total
@@ -788,14 +811,19 @@ func _make_team_summary(team: int, total: int, header: String) -> VBoxContainer:
 	return box
 
 
-func _make_seat_summary_row(seat: int) -> HBoxContainer:
+func _make_seat_summary_row(seat: int, note: String) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 
 	var name_lbl := Label.new()
-	name_lbl.text = "%s:" % SEAT_NAMES[seat]
-	name_lbl.custom_minimum_size = Vector2(66, 0)
+	if note.is_empty():
+		name_lbl.text = "%s:" % SEAT_NAMES[seat]
+	else:
+		name_lbl.text = "%s (%s):" % [SEAT_NAMES[seat], note]
+	name_lbl.custom_minimum_size = Vector2(112, 0)
 	name_lbl.add_theme_font_size_override("font_size", 14)
+	if not note.is_empty():
+		name_lbl.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
 	row.add_child(name_lbl)
 
 	var tiles_box := HBoxContainer.new()
