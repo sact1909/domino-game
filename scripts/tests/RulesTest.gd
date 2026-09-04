@@ -252,6 +252,7 @@ func _play_one_hand(gs: GameState, ctx: String) -> void:
 		_check_tiles(gs, ctx)
 		_check_chain(gs, ctx)
 		_check_events(gs, events, ctx)
+		_check_views(gs, ctx)
 
 	_hands_played += 1
 
@@ -304,6 +305,61 @@ func _check_chain(gs: GameState, ctx: String) -> void:
 
 	if gs.opening_tile_index < 0 or gs.opening_tile_index >= gs.board.size():
 		_fail("%s: opening_tile_index=%d está fuera de la mesa (%d fichas)" % [ctx, gs.opening_tile_index, gs.board.size()])
+
+
+## La vista pública no puede contener NINGUNA ficha que no esté en la mesa. Se
+## recorre entera buscando fichas en vez de mirar solo las claves conocidas: así,
+## si alguien agrega un campo nuevo que sin darse cuenta arrastra manos ajenas, la
+## prueba lo caza. En red, ese descuido es que un cliente modificado te vea la mano.
+func _check_views(gs: GameState, ctx: String) -> void:
+	var pub: Dictionary = gs.public_view()
+
+	var on_board := {}
+	for t in gs.board:
+		on_board["%d-%d" % [t.a, t.b]] = true
+
+	var found: Array = []
+	_collect_dominoes(pub, found)
+	for t in found:
+		if not on_board.has("%d-%d" % [t.a, t.b]):
+			_fail("%s: la vista pública filtra la ficha %s, que no está en la mesa" % [ctx, str(t)])
+			return
+
+	# Las cantidades tienen que reflejar las manos reales, sin revelar cuáles son.
+	for seat in range(GameState.SEAT_COUNT):
+		if pub.hand_counts[seat] != gs.hands[seat].size():
+			_fail("%s: la vista pública dice %d fichas para el puesto %d, tiene %d" % [ctx, pub.hand_counts[seat], seat, gs.hands[seat].size()])
+			return
+
+	# La vista privada trae exactamente las fichas de ese puesto, y nada más.
+	for seat in range(GameState.SEAT_COUNT):
+		var priv: Dictionary = gs.private_view(seat)
+		if priv.tiles.size() != gs.hands[seat].size():
+			_fail("%s: la vista privada del puesto %d trae %d fichas, tiene %d" % [ctx, seat, priv.tiles.size(), gs.hands[seat].size()])
+			return
+		for i in range(priv.tiles.size()):
+			var mine: Domino = priv.tiles[i]
+			var real: Domino = gs.hands[seat][i]
+			if mine.a != real.a or mine.b != real.b:
+				_fail("%s: la vista privada del puesto %d no coincide con su mano" % [ctx, seat])
+				return
+
+	# Modificar una vista no debe tocar el estado: se entregan copias, no referencias.
+	var board_size: int = gs.board.size()
+	pub.board.clear()
+	if gs.board.size() != board_size:
+		_fail("%s: vaciar la vista pública vació la mesa de verdad (se entregó una referencia)" % ctx)
+
+
+func _collect_dominoes(value: Variant, out: Array) -> void:
+	if value is Domino:
+		out.append(value)
+	elif value is Array:
+		for item in value:
+			_collect_dominoes(item, out)
+	elif value is Dictionary:
+		for key in value:
+			_collect_dominoes(value[key], out)
 
 
 func _check_events(gs: GameState, events: Array, ctx: String) -> void:

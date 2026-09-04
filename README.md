@@ -210,6 +210,30 @@ si no calza. Jugando en local no debería ocurrir nunca, pero es la base de la
 autoridad del servidor: un cliente modificado no podrá inventar una jugada, una
 capicúa ni un turno ajeno.
 
+### Vistas: separar lo público de lo privado
+
+`GameState` expone tres vistas, y el **dibujado lee solo de ellas**, nunca del
+estado directamente:
+
+- **`public_view()`** — lo que cualquiera puede ver: el tablero, las puntas, los
+  marcadores, de quién es el turno, quién salió, los bonos. De las manos ajenas solo
+  viaja la **cantidad** de fichas, nunca cuáles son.
+- **`private_view(seat)`** — las fichas de ese puesto y sus jugadas posibles.
+- **`reveal_view()`** — las cuatro manos, para el resumen de fin de mano. Se pide
+  únicamente con la mano ya cerrada.
+
+Esto es lo que hace posible jugar en red sin filtrar información: el servidor
+difundirá la vista pública a los cuatro jugadores y le mandará a cada uno solo su
+vista privada. Un cliente modificado no puede mostrar lo que nunca le llegó.
+
+La IA también recibe la vista privada de su puesto en vez del estado completo, así
+solo puede usar lo que un jugador de verdad vería. Eso importa para cuando releve a
+alguien que se desconecte.
+
+**Lo que sí accede al estado con autoridad** son las dos otras funciones que hoy
+cumple `Main.gd`, y que pasarán al servidor: aplicar jugadas y decidir un pase
+forzado. Está marcado con comentarios en el código.
+
 ## Pruebas
 
 Como las reglas son puras, se pueden probar sin abrir la ventana:
@@ -234,6 +258,11 @@ cada acción, verifica invariantes:
 - En un tranque, los dos jugadores comparados son siempre de parejas contrarias, y
   gana quien tenga menos puntos.
 - La primera mano de la partida abre con el 6-6.
+- **La vista pública no contiene ninguna ficha que no esté en la mesa.** Se recorre
+  la vista entera buscando fichas, en vez de mirar solo las claves conocidas: si
+  alguien agrega un campo que sin darse cuenta arrastra manos ajenas, la prueba lo
+  caza. En red, ese descuido es que un cliente modificado te vea la mano.
+- Las vistas entregan copias, no referencias: modificarlas no toca el estado.
 
 También prueba lo que **no** debe poderse: jugar fuera de turno, pasar teniendo
 jugada, abrir la primera mano sin el 6-6, y pedir una punta donde la ficha no calza.

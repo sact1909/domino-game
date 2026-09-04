@@ -26,6 +26,21 @@ enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
 # servidor dedicado.
 var state := GameState.new()
 
+# El DIBUJADO lee solo de estas dos vistas, nunca de state directamente: "pub" es
+# lo que cualquiera puede ver y "mine" son las fichas del puesto local. Esa
+# disciplina es la que garantiza que la pantalla no muestre nada que en red no
+# habría llegado desde el servidor.
+#
+# Ojo: este script todavía hace tres papeles a la vez — interfaz, motor local de
+# turnos y anfitrión de la IA. Los dos últimos sí necesitan acceso de autoridad
+# (hoy este proceso ES la autoridad) y pasarán al servidor más adelante.
+var pub: Dictionary = {}
+var mine: Dictionary = {}
+
+# Destape de fin de mano: las cuatro manos, para el resumen de puntos. Solo se pide
+# con la mano ya terminada — antes de eso sería filtrar las fichas de los demás.
+var reveal: Dictionary = {}
+
 # "phase" es de la interfaz, no de las reglas: controla qué se puede tocar en
 # pantalla y cuándo se detiene el ciclo de turnos.
 var phase: int = Phase.SETUP
@@ -98,6 +113,9 @@ func _ready() -> void:
 	_build_hand_result_overlay()
 	_build_game_over_overlay()
 	_build_start_overlay()
+	# Que las vistas nunca queden vacías: cualquier función de dibujado que corra
+	# antes del primer reparto encontraría un diccionario sin claves y fallaría.
+	_refresh_views()
 
 
 func _build_background() -> void:
@@ -408,7 +426,7 @@ func _update_turn_dots() -> void:
 			continue
 		var sb := StyleBoxFlat.new()
 		sb.set_corner_radius_all(8)
-		if phase == Phase.PLAYING and seat == state.current_player:
+		if phase == Phase.PLAYING and seat == pub.current_player:
 			sb.bg_color = Color(1, 0.85, 0.25)
 		else:
 			sb.bg_color = Color(0.25, 0.32, 0.26)
@@ -418,7 +436,7 @@ func _update_turn_dots() -> void:
 # Marca del jugador que salió en la mano, para tener siempre la referencia de quién
 # jugó primero en esa ronda.
 func _lead_mark(seat: int) -> String:
-	if seat == state.lead_player:
+	if seat == pub.lead_player:
 		return "  ·  salió"
 	return ""
 
@@ -644,11 +662,13 @@ func start_new_hand() -> void:
 	# la única fuente del azar.
 	state.deal(randi())
 	phase = Phase.PLAYING
+	# Se refrescan antes de los mensajes: ya se leen de la vista, no del estado.
+	_refresh_views()
 
-	if state.must_open_with_double_six:
-		_log("Se reparten las fichas (7 por jugador, sin pozo). [b]%s[/b] tiene el 6-6 (el burro) y sale." % SEAT_NAMES[state.current_player])
+	if pub.must_open_with_double_six:
+		_log("Se reparten las fichas (7 por jugador, sin pozo). [b]%s[/b] tiene el 6-6 (el burro) y sale." % SEAT_NAMES[pub.current_player])
 	else:
-		_log("Nueva mano. Sale %s." % SEAT_NAMES[state.current_player])
+		_log("Nueva mano. Sale %s." % SEAT_NAMES[pub.current_player])
 
 	_render_all()
 	_proceed_turn()
@@ -660,34 +680,44 @@ func start_new_hand() -> void:
 func _proceed_turn() -> void:
 	if phase != Phase.PLAYING:
 		return
+	_refresh_views()
 	_update_top_bar()
 	_render_south_hand()
 	_update_pass_status()
 	_update_turn_dots()
 
+	var seat: int = pub.current_player
+
 	# Si de verdad no hay ninguna ficha jugable (sea IA o el humano), se pasa solo:
 	# nadie puede quedarse esperando un clic que no llega, y así el tranque (4 pases
-	# seguidos) siempre se detecta y se resuelve. La pausa es solo ritmo visual; la
-	# regla de que un pase sin jugada es obligatorio la valida GameState.
-	if not state.has_legal_move(state.current_player):
+	# seguidos) siempre se detecta y se resuelve. La pausa es solo ritmo visual.
+	#
+	# Esto consulta el estado con autoridad, no una vista: decidir un pase forzado
+	# es trabajo del motor, y en red lo hará el servidor. Un cliente no puede saber
+	# si otro tiene jugada, ni debería.
+	if not state.has_legal_move(seat):
 		await get_tree().create_timer(0.9).timeout
 		if phase == Phase.PLAYING:
-			_submit_pass(state.current_player)
+			_submit_pass(seat)
 		return
 
-	if state.current_player != HUMAN_SEAT:
+	if seat != HUMAN_SEAT:
 		await get_tree().create_timer(0.9).timeout
 		if phase == Phase.PLAYING:
-			_ai_take_turn(state.current_player)
+			_ai_take_turn(seat)
 
 
+# La IA recibe la vista privada de su puesto, no el estado completo: así solo puede
+# usar lo que un jugador de verdad vería. Cuando releve a alguien que se desconecte,
+# correrá en el servidor con esa misma limitación.
 func _ai_take_turn(seat: int) -> void:
-	var moves := state.legal_moves_for(seat)
+	var view: Dictionary = state.private_view(seat)
+	var moves: Array = view.legal_moves
 	if moves.is_empty():
 		_submit_pass(seat)
 		return
 
-	var hand: Array = state.hands[seat]
+	var hand: Array = view.tiles
 	var best: Dictionary = moves[0]
 	for m in moves:
 		var t: Domino = hand[m.idx]
@@ -780,6 +810,10 @@ func _bonus_text(e: Dictionary) -> String:
 # Arma la pantalla de fin de mano a partir del evento de cierre. Las reglas y los
 # puntos ya los resolvió GameState; acá solo se redacta lo que se lee en pantalla.
 func _show_hand_result_for(e: Dictionary) -> void:
+	# Recién acá se pide el destape, con la mano ya cerrada: es el único momento en
+	# que corresponde ver las fichas de los demás.
+	reveal = state.reveal_view()
+
 	if str(e.get("type", "")) == "hand_won":
 		var subtitle: String = "%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % SEAT_NAMES[e.winner_seat]
 		if e.capicua:
@@ -845,14 +879,14 @@ func _show_hand_result(title: String, subtitle: String, notes: Dictionary, winne
 	for team in [0, 1]:
 		hand_result_content.add_child(_make_team_summary(team, team_pips[team], "Equipo %s" % TEAM_NAMES[team], notes))
 
-	if not state.hand_bonuses.is_empty():
+	if not pub.hand_bonuses.is_empty():
 		var bonus_head := Label.new()
 		bonus_head.text = "Bonificaciones de la mano"
 		bonus_head.add_theme_font_size_override("font_size", 15)
 		bonus_head.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
 		hand_result_content.add_child(bonus_head)
 
-		for b in state.hand_bonuses:
+		for b in pub.hand_bonuses:
 			var b_lbl := Label.new()
 			b_lbl.text = "+%d  %s  →  %s" % [b.pts, _bonus_text(b), TEAM_NAMES[b.team]]
 			b_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -868,7 +902,7 @@ func _show_hand_result(title: String, subtitle: String, notes: Dictionary, winne
 	hand_result_content.add_child(pts_lbl)
 
 	var score_lbl := Label.new()
-	score_lbl.text = "Marcador: %s %d  —  %s %d      (meta: %d)" % [TEAM_NAMES[0], state.team_score[0], TEAM_NAMES[1], state.team_score[1], state.target_score]
+	score_lbl.text = "Marcador: %s %d  —  %s %d      (meta: %d)" % [TEAM_NAMES[0], pub.team_score[0], TEAM_NAMES[1], pub.team_score[1], pub.target_score]
 	score_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	score_lbl.add_theme_font_size_override("font_size", 15)
 	hand_result_content.add_child(score_lbl)
@@ -920,7 +954,7 @@ func _make_seat_summary_row(seat: int, note: String) -> HBoxContainer:
 	row.add_child(tiles_box)
 
 	var total := 0
-	for t in state.hands[seat]:
+	for t in reveal.hands[seat]:
 		var tex := TextureRect.new()
 		tex.texture = load(t.texture())
 		tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -929,7 +963,7 @@ func _make_seat_summary_row(seat: int, note: String) -> HBoxContainer:
 		tiles_box.add_child(tex)
 		total += t.pips()
 
-	if state.hands[seat].is_empty():
+	if reveal.hands[seat].is_empty():
 		var none_lbl := Label.new()
 		none_lbl.text = "se pegó (sin fichas)"
 		none_lbl.add_theme_font_size_override("font_size", 13)
@@ -962,18 +996,18 @@ func _on_hand_result_continue() -> void:
 
 func _game_over(winner_team: int) -> void:
 	phase = Phase.GAME_OVER
-	game_over_label.text = "¡Equipo %s gana la partida!\nPuntaje final: %d - %d" % [TEAM_NAMES[winner_team], state.team_score[0], state.team_score[1]]
+	game_over_label.text = "¡Equipo %s gana la partida!\nPuntaje final: %d - %d" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]]
 	game_over_overlay.visible = true
-	_log("[b]Fin de la partida. Gana el equipo %s (%d - %d).[/b]" % [TEAM_NAMES[winner_team], state.team_score[0], state.team_score[1]])
+	_log("[b]Fin de la partida. Gana el equipo %s (%d - %d).[/b]" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]])
 
 
 # ===========================================================================
 # Interacción del jugador humano
 # ===========================================================================
 func _on_hand_tile_pressed(idx: int) -> void:
-	if phase != Phase.PLAYING or state.current_player != HUMAN_SEAT:
+	if phase != Phase.PLAYING or pub.current_player != HUMAN_SEAT:
 		return
-	var moves := state.legal_moves_for(HUMAN_SEAT)
+	var moves: Array = mine.legal_moves
 	var chosen: Variant = null
 	for m in moves:
 		if m.idx == idx:
@@ -981,7 +1015,7 @@ func _on_hand_tile_pressed(idx: int) -> void:
 			break
 	if chosen == null:
 		return
-	if state.board.is_empty() or chosen.ends.size() == 1:
+	if pub.board.is_empty() or chosen.ends.size() == 1:
 		var e: String = chosen.ends[0]
 		_submit_play(HUMAN_SEAT, idx, e)
 	else:
@@ -992,8 +1026,8 @@ func _show_end_choice_popup(idx: int) -> void:
 	pending_hand_idx = idx
 	var left_btn: Button = end_choice_popup.find_child("LeftBtn", true, false)
 	var right_btn: Button = end_choice_popup.find_child("RightBtn", true, false)
-	left_btn.text = "Izquierda (%d)" % state.left_end
-	right_btn.text = "Derecha (%d)" % state.right_end
+	left_btn.text = "Izquierda (%d)" % pub.left_end
+	right_btn.text = "Derecha (%d)" % pub.right_end
 	end_choice_popup.visible = true
 
 
@@ -1009,7 +1043,15 @@ func _on_end_choice(end: String) -> void:
 # ===========================================================================
 # Renderizado
 # ===========================================================================
+# Único punto donde el dibujado toma datos del estado. De acá en adelante todo lee
+# de "pub" y "mine".
+func _refresh_views() -> void:
+	pub = state.public_view()
+	mine = state.private_view(HUMAN_SEAT)
+
+
 func _render_all() -> void:
+	_refresh_views()
 	_render_board()
 	_render_south_hand()
 	_render_side_stacks()
@@ -1031,14 +1073,14 @@ func _render_board() -> void:
 	for c in board_viewport.get_children():
 		c.queue_free()
 
-	if state.board.is_empty() or state.opening_tile_index < 0:
+	if pub.board.is_empty() or pub.opening_tile_index < 0:
 		return
 
-	var anchor_tile: Domino = state.board[state.opening_tile_index]
-	var right_chain: Array = state.board.slice(state.opening_tile_index + 1, state.board.size())
+	var anchor_tile: Domino = pub.board[pub.opening_tile_index]
+	var right_chain: Array = pub.board.slice(pub.opening_tile_index + 1, pub.board.size())
 	var left_chain: Array = []
-	for i in range(state.opening_tile_index - 1, -1, -1):
-		left_chain.append(state.board[i])
+	for i in range(pub.opening_tile_index - 1, -1, -1):
+		left_chain.append(pub.board[i])
 
 	# Solo en la primera mano sale forzosamente el 6-6; de la segunda en adelante la
 	# ficha inicial puede ser cualquiera. Si es un doble va cruzada (angosta y alta);
@@ -1226,12 +1268,12 @@ func _render_south_hand() -> void:
 		c.queue_free()
 
 	var legal_by_idx := {}
-	if phase == Phase.PLAYING and state.current_player == HUMAN_SEAT:
-		for m in state.legal_moves_for(HUMAN_SEAT):
+	if phase == Phase.PLAYING and pub.current_player == HUMAN_SEAT:
+		for m in mine.legal_moves:
 			legal_by_idx[m.idx] = true
 
-	for i in range(state.hands[HUMAN_SEAT].size()):
-		var t: Domino = state.hands[HUMAN_SEAT][i]
+	for i in range(mine.tiles.size()):
+		var t: Domino = mine.tiles[i]
 		var btn := TextureButton.new()
 		btn.texture_normal = load(t.texture())
 		btn.ignore_texture_size = true
@@ -1249,49 +1291,49 @@ func _render_south_hand() -> void:
 # 1:2 de una ficha real): de pie para Norte, acostadas para los laterales, según
 # cómo las sostendría cada jugador desde su puesto.
 func _render_north_hand_backs() -> void:
-	north_title.text = "Norte (IA) — compañero de Sur — %d fichas%s" % [state.hands[2].size(), _lead_mark(2)]
+	north_title.text = "Norte (IA) — compañero de Sur — %d fichas%s" % [pub.hand_counts[2], _lead_mark(2)]
 	for c in north_row.get_children():
 		c.queue_free()
-	for i in range(state.hands[2].size()):
+	for i in range(pub.hand_counts[2]):
 		north_row.add_child(_make_tile_back(44, 88))
 
 
 func _render_side_stacks() -> void:
-	west_title.text = "Oeste (IA)\n%d fichas%s" % [state.hands[3].size(), _lead_mark(3)]
+	west_title.text = "Oeste (IA)\n%d fichas%s" % [pub.hand_counts[3], _lead_mark(3)]
 	for c in west_stack.get_children():
 		c.queue_free()
-	for i in range(state.hands[3].size()):
+	for i in range(pub.hand_counts[3]):
 		west_stack.add_child(_make_tile_back(88, 44))
 
-	east_title.text = "Este (IA)\n%d fichas%s" % [state.hands[1].size(), _lead_mark(1)]
+	east_title.text = "Este (IA)\n%d fichas%s" % [pub.hand_counts[1], _lead_mark(1)]
 	for c in east_stack.get_children():
 		c.queue_free()
-	for i in range(state.hands[1].size()):
+	for i in range(pub.hand_counts[1]):
 		east_stack.add_child(_make_tile_back(88, 44))
 
 
 func _update_top_bar() -> void:
-	lbl_target.text = "Meta: %d" % state.target_score
-	lbl_score0.text = "Sur-Norte: %d" % state.team_score[0]
-	lbl_score1.text = "Este-Oeste: %d" % state.team_score[1]
+	lbl_target.text = "Meta: %d" % pub.target_score
+	lbl_score0.text = "Sur-Norte: %d" % pub.team_score[0]
+	lbl_score1.text = "Este-Oeste: %d" % pub.team_score[1]
 	if phase == Phase.PLAYING:
-		var who: String = "Tú" if state.current_player == HUMAN_SEAT else "IA"
-		lbl_turn.text = "Turno: %s (%s)" % [SEAT_NAMES[state.current_player], who]
+		var who: String = "Tú" if pub.current_player == HUMAN_SEAT else "IA"
+		lbl_turn.text = "Turno: %s (%s)" % [SEAT_NAMES[pub.current_player], who]
 	else:
 		lbl_turn.text = ""
 
-	if state.board.is_empty():
+	if pub.board.is_empty():
 		lbl_ends.text = "Mesa vacía — se espera la ficha inicial"
 	else:
-		lbl_ends.text = "Puntas abiertas: %d  —  %d" % [state.left_end, state.right_end]
+		lbl_ends.text = "Puntas abiertas: %d  —  %d" % [pub.left_end, pub.right_end]
 
 
 # El pase es automático (ver _proceed_turn) para que el juego nunca se quede
 # esperando un clic que no llega; esto solo informa el estado del turno.
 func _update_pass_status() -> void:
-	if phase != Phase.PLAYING or state.current_player != HUMAN_SEAT:
+	if phase != Phase.PLAYING or pub.current_player != HUMAN_SEAT:
 		pass_status.text = ""
-	elif state.legal_moves_for(HUMAN_SEAT).is_empty():
+	elif mine.legal_moves.is_empty():
 		pass_status.text = "Sin fichas jugables: pasando…"
 	else:
 		pass_status.text = "Tienes ficha jugable: debes jugarla"

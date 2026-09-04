@@ -216,6 +216,70 @@ func team_pip_totals() -> Array:
 	return totals
 
 
+# ===========================================================================
+# Vistas
+# ===========================================================================
+# Separar lo que todos pueden ver de lo que solo ve cada jugador es lo que hace
+# posible jugar en red sin filtrar información: el servidor difunde la vista
+# pública a los cuatro y le manda a cada uno solo su vista privada. Un cliente
+# modificado no puede ver lo que nunca le llegó.
+
+## Lo que TODOS pueden ver. De las manos ajenas solo viaja la CANTIDAD de fichas,
+## nunca cuáles son. El tablero sí es público: está a la vista de la mesa.
+func public_view() -> Dictionary:
+	var counts: Array = []
+	for seat in range(SEAT_COUNT):
+		counts.append(hands[seat].size())
+
+	return {
+		"board": board.duplicate(),
+		"left_end": left_end,
+		"right_end": right_end,
+		"opening_tile_index": opening_tile_index,
+		"hand_counts": counts,
+		"team_score": team_score.duplicate(),
+		"current_player": current_player,
+		"lead_player": lead_player,
+		"last_player_to_play": last_player_to_play,
+		"consecutive_passes": consecutive_passes,
+		"must_open_with_double_six": must_open_with_double_six,
+		"hand_over": hand_over,
+		"hand_bonuses": hand_bonuses.duplicate(true),
+		"target_score": target_score,
+		"bonus_pase_seguido": bonus_pase_seguido,
+		"bonus_capicua": bonus_capicua,
+		"bonus_pase_salida": bonus_pase_salida,
+	}
+
+
+## Lo que solo ve un puesto: sus fichas y qué puede jugar con ellas. Las jugadas
+## legales las calcula quien tiene autoridad, no el cliente.
+func private_view(seat: int) -> Dictionary:
+	return {
+		"seat": seat,
+		"tiles": hands[seat].duplicate(),
+		"legal_moves": legal_moves_for(seat),
+	}
+
+
+## Destape de fin de mano: las cuatro manos, para el resumen de puntos. Solo tiene
+## sentido con la mano terminada — entregarlo antes sería filtrar las fichas de los
+## demás, así que el campo "hand_over" viaja para que quien lo reciba lo verifique.
+func reveal_view() -> Dictionary:
+	var all_hands: Array = []
+	var pips: Array = []
+	for seat in range(SEAT_COUNT):
+		all_hands.append(hands[seat].duplicate())
+		pips.append(seat_pips(seat))
+
+	return {
+		"hand_over": hand_over,
+		"hands": all_hands,
+		"seat_pips": pips,
+		"team_totals": team_pip_totals(),
+	}
+
+
 func is_game_over() -> bool:
 	return team_score[0] >= target_score or team_score[1] >= target_score
 
