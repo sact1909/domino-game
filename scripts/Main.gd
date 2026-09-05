@@ -605,8 +605,8 @@ func _is_partner(seat: int) -> bool:
 func _rival_label(seat: int, line_break: bool) -> String:
 	var partner: String = " — tu compañero" if _is_partner(seat) else ""
 	var separator: String = "\n" if line_break else " — "
-	return "%s %s%s%s%d fichas%s" % [
-		SEAT_NAMES[seat], _owner_label(seat), partner, separator, pub.hand_counts[seat], _lead_mark(seat),
+	return "%s%s%s%d fichas%s" % [
+		_seat_title(seat), partner, separator, pub.hand_counts[seat], _lead_mark(seat),
 	]
 
 
@@ -957,9 +957,9 @@ func _on_events(list: Array) -> void:
 func _on_hand_started() -> void:
 	phase = Phase.PLAYING
 	if pub.must_open_with_double_six:
-		_log("Se reparten las fichas (7 por jugador, sin pozo). [b]%s[/b] tiene el 6-6 (el burro) y sale." % SEAT_NAMES[pub.current_player])
+		_log("Se reparten las fichas (7 por jugador, sin pozo). [b]%s[/b] tiene el 6-6 (el burro) y sale." % _seat_label(pub.current_player))
 	else:
-		_log("Nueva mano. Sale %s." % SEAT_NAMES[pub.current_player])
+		_log("Nueva mano. Sale %s." % _seat_label(pub.current_player))
 	# El snapshot del reparto ya llegó, pero con la fase todavía en SETUP o en
 	# HAND_OVER: se redibuja para que la mano propia quede interactiva.
 	_render_all()
@@ -997,10 +997,10 @@ func _on_disconnected() -> void:
 
 func _on_match_ended(winner_team: int) -> void:
 	phase = Phase.GAME_OVER
-	game_over_label.text = "¡Equipo %s gana la partida!\nPuntaje final: %d - %d" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]]
+	game_over_label.text = "¡Equipo %s gana la partida!\nPuntaje final: %d - %d" % [_team_label(winner_team), pub.team_score[0], pub.team_score[1]]
 	_configure_end_buttons()
 	game_over_overlay.visible = true
-	_log("[b]Fin de la partida. Gana el equipo %s (%d - %d).[/b]" % [TEAM_NAMES[winner_team], pub.team_score[0], pub.team_score[1]])
+	_log("[b]Fin de la partida. Gana el equipo %s (%d - %d).[/b]" % [_team_label(winner_team), pub.team_score[0], pub.team_score[1]])
 
 
 # Traduce un evento a lo que se lee en pantalla. Acá vive el idioma; las reglas ya
@@ -1008,25 +1008,25 @@ func _on_match_ended(winner_team: int) -> void:
 func _handle_event(e: Dictionary) -> void:
 	match str(e.get("type", "")):
 		"played":
-			_log("%s jugó [b]%s[/b]." % [SEAT_NAMES[e.seat], str(e.tile)])
+			_log("%s jugó [b]%s[/b]." % [_seat_label(e.seat), str(e.tile)])
 		"passed":
-			_log("%s pasa (no tiene fichas con %d ni %d)." % [SEAT_NAMES[e.seat], e.left_end, e.right_end])
-			_show_toast("%s pasó" % SEAT_NAMES[e.seat])
+			_log("%s pasa (no tiene fichas con %d ni %d)." % [_seat_label(e.seat), e.left_end, e.right_end])
+			_show_toast("%s pasó" % _seat_label(e.seat))
 		"bonus":
 			var text: String = _bonus_text(e)
-			_log("[b]+%d[/b] al equipo %s — %s." % [e.pts, TEAM_NAMES[e.team], text])
+			_log("[b]+%d[/b] al equipo %s — %s." % [e.pts, _team_label(e.team), text])
 			_show_toast("+%d  %s" % [e.pts, text])
 		"opening_pass_cancelled":
-			_log("Pase de salida anulado: %s (pareja de %s) tampoco pudo jugar." % [SEAT_NAMES[e.partner_seat], SEAT_NAMES[e.lead_seat]])
+			_log("Pase de salida anulado: %s (pareja de %s) tampoco pudo jugar." % [_seat_label(e.partner_seat), _seat_label(e.lead_seat)])
 		"hand_won":
-			_log("[b]%s[/b] colocó su última ficha. ¡Equipo %s gana la mano! (+%d puntos)" % [SEAT_NAMES[e.winner_seat], TEAM_NAMES[e.winner_team], e.pts])
+			_log("[b]%s[/b] colocó su última ficha. ¡Equipo %s gana la mano! (+%d puntos)" % [_seat_label(e.winner_seat), _team_label(e.winner_team), e.pts])
 		"tranque":
-			_log("¡Tranque! %s (%d) contra %s (%d): gana el equipo %s. (+%d puntos)" % [SEAT_NAMES[e.closer], e.closer_pips, SEAT_NAMES[e.challenger], e.challenger_pips, TEAM_NAMES[e.winner_team], e.pts])
+			_log("¡Tranque! %s (%d) contra %s (%d): gana el equipo %s. (+%d puntos)" % [_seat_label(e.closer), e.closer_pips, _seat_label(e.challenger), e.challenger_pips, _team_label(e.winner_team), e.pts])
 		"rejected":
 			# El aviso al desarrollador se queda: jugando en local un rechazo solo puede
 			# venir de un error de la interfaz. En red va a ser normal con latencia,
 			# porque la mesa puede avanzar mientras el clic viaja.
-			push_warning("Jugada rechazada de %s: %s" % [SEAT_NAMES[e.seat], e.reason])
+			push_warning("Jugada rechazada de %s: %s" % [_seat_label(e.seat), e.reason])
 			# Y al jugador se le dice: si no, el clic no hace nada y parece que el juego
 			# se colgó.
 			if e.seat == local_seat:
@@ -1042,11 +1042,11 @@ func _handle_event(e: Dictionary) -> void:
 func _bonus_text(e: Dictionary) -> String:
 	match str(e.get("kind", "")):
 		"pase_seguido":
-			return "Pase seguido (%s hizo pasar a los otros tres)" % SEAT_NAMES[e.seat]
+			return "Pase seguido (%s hizo pasar a los otros tres)" % _seat_label(e.seat)
 		"capicua":
-			return "Capicúa (%s cerró con ficha que iba en las dos puntas)" % SEAT_NAMES[e.seat]
+			return "Capicúa (%s cerró con ficha que iba en las dos puntas)" % _seat_label(e.seat)
 		"pase_salida":
-			return "Pase de salida (%s hizo pasar a %s)" % [SEAT_NAMES[e.seat], SEAT_NAMES[e.other_seat]]
+			return "Pase de salida (%s hizo pasar a %s)" % [_seat_label(e.seat), _seat_label(e.other_seat)]
 	return "Bonificación"
 
 
@@ -1059,11 +1059,11 @@ func _show_hand_result_for(e: Dictionary) -> void:
 	# "reveal" ya viene puesto por _on_hand_ended: el destape llega junto con el
 	# cierre de la mano, que es el único momento en que corresponde verlo.
 	if str(e.get("type", "")) == "hand_won":
-		var subtitle: String = "%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % SEAT_NAMES[e.winner_seat]
+		var subtitle: String = "%s colocó su última ficha. Se cuentan todas las fichas que quedaron en la mesa, de las dos parejas." % _seat_label(e.winner_seat)
 		if e.capicua:
 			subtitle += " Cerró de capicúa: la ficha calzaba en las dos puntas."
 		_show_hand_result(
-			"¡Equipo %s gana la mano!" % TEAM_NAMES[e.winner_team],
+			"¡Equipo %s gana la mano!" % _team_label(e.winner_team),
 			subtitle,
 			{},
 			e.winner_team,
@@ -1074,9 +1074,9 @@ func _show_hand_result_for(e: Dictionary) -> void:
 
 	var tranque_subtitle: String
 	if e.tie:
-		tranque_subtitle = "%s trancó el juego. Empate con %s (%d - %d): gana la pareja que tiene la mano." % [SEAT_NAMES[e.closer], SEAT_NAMES[e.challenger], e.closer_pips, e.challenger_pips]
+		tranque_subtitle = "%s trancó el juego. Empate con %s (%d - %d): gana la pareja que tiene la mano." % [_seat_label(e.closer), _seat_label(e.challenger), e.closer_pips, e.challenger_pips]
 	else:
-		tranque_subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [SEAT_NAMES[e.closer], SEAT_NAMES[e.challenger], e.closer_pips, e.challenger_pips, SEAT_NAMES[e.winner_seat]]
+		tranque_subtitle = "%s trancó el juego. Se comparan sus fichas con las de %s, que seguía en el turno: %d contra %d, gana %s." % [_seat_label(e.closer), _seat_label(e.challenger), e.closer_pips, e.challenger_pips, _seat_label(e.winner_seat)]
 
 	# Se llena a mano en vez de con un literal: en un literal de diccionario una
 	# clave sin comillas se toma como el nombre literal, no como el valor de la
@@ -1121,7 +1121,7 @@ func _show_hand_result(title: String, subtitle: String, notes: Dictionary, winne
 	hand_result_content.add_child(count_head)
 
 	for team in [0, 1]:
-		hand_result_content.add_child(_make_team_summary(team, team_pips[team], "Equipo %s" % TEAM_NAMES[team], notes))
+		hand_result_content.add_child(_make_team_summary(team, team_pips[team], "Equipo %s" % _team_label(team), notes))
 
 	if not pub.hand_bonuses.is_empty():
 		var bonus_head := Label.new()
@@ -1132,21 +1132,21 @@ func _show_hand_result(title: String, subtitle: String, notes: Dictionary, winne
 
 		for b in pub.hand_bonuses:
 			var b_lbl := Label.new()
-			b_lbl.text = "+%d  %s  →  %s" % [b.pts, _bonus_text(b), TEAM_NAMES[b.team]]
+			b_lbl.text = "+%d  %s  →  %s" % [b.pts, _bonus_text(b), _team_label(b.team)]
 			b_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
 			b_lbl.custom_minimum_size = Vector2(520, 0)
 			b_lbl.add_theme_font_size_override("font_size", 13)
 			hand_result_content.add_child(b_lbl)
 
 	var pts_lbl := Label.new()
-	pts_lbl.text = "Equipo %s suma %d puntos de la mesa  (%d + %d)" % [TEAM_NAMES[winner_team], pts, team_pips[0], team_pips[1]]
+	pts_lbl.text = "Equipo %s suma %d puntos de la mesa  (%d + %d)" % [_team_label(winner_team), pts, team_pips[0], team_pips[1]]
 	pts_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	pts_lbl.add_theme_font_size_override("font_size", 20)
 	pts_lbl.add_theme_color_override("font_color", Color(0.6, 1, 0.6))
 	hand_result_content.add_child(pts_lbl)
 
 	var score_lbl := Label.new()
-	score_lbl.text = "Marcador: %s %d  —  %s %d      (meta: %d)" % [TEAM_NAMES[0], pub.team_score[0], TEAM_NAMES[1], pub.team_score[1], pub.target_score]
+	score_lbl.text = "Marcador: %s %d  —  %s %d      (meta: %d)" % [_team_label(0), pub.team_score[0], _team_label(1), pub.team_score[1], pub.target_score]
 	score_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	score_lbl.add_theme_font_size_override("font_size", 15)
 	hand_result_content.add_child(score_lbl)
@@ -1183,9 +1183,9 @@ func _make_seat_summary_row(seat: int, note: String) -> HBoxContainer:
 
 	var name_lbl := Label.new()
 	if note.is_empty():
-		name_lbl.text = "%s:" % SEAT_NAMES[seat]
+		name_lbl.text = "%s:" % _seat_label(seat)
 	else:
-		name_lbl.text = "%s (%s):" % [SEAT_NAMES[seat], note]
+		name_lbl.text = "%s (%s):" % [_seat_label(seat), note]
 	name_lbl.custom_minimum_size = Vector2(112, 0)
 	name_lbl.add_theme_font_size_override("font_size", 14)
 	if not note.is_empty():
@@ -1325,7 +1325,7 @@ func _render_all() -> void:
 	_update_top_bar()
 	_update_pass_status()
 	_update_turn_dots()
-	own_title.text = "Tu mano (%s)%s" % [SEAT_NAMES[local_seat], _lead_mark(local_seat)]
+	own_title.text = "Tu mano (%s)%s" % [_seat_label(local_seat), _lead_mark(local_seat)]
 
 
 # La ficha inicial (el burro) queda siempre exactamente en el centro del tablero y
@@ -1587,13 +1587,13 @@ func _render_side_stacks() -> void:
 
 func _update_top_bar() -> void:
 	lbl_target.text = "Meta: %d" % pub.target_score
-	lbl_score0.text = "Sur-Norte: %d" % pub.team_score[0]
-	lbl_score1.text = "Este-Oeste: %d" % pub.team_score[1]
+	lbl_score0.text = "%s: %d" % [_team_label(0), pub.team_score[0]]
+	lbl_score1.text = "%s: %d" % [_team_label(1), pub.team_score[1]]
 	if phase == Phase.PLAYING:
-		var who: String = "Tú"
-		if pub.current_player != local_seat:
-			who = _owner_name(pub.current_player)
-		lbl_turn.text = "Turno: %s (%s)" % [SEAT_NAMES[pub.current_player], who]
+		if pub.current_player == local_seat:
+			lbl_turn.text = "Turno: %s (Tú)" % _seat_label(local_seat)
+		else:
+			lbl_turn.text = "Turno: %s" % _seat_title(pub.current_player)
 	else:
 		lbl_turn.text = ""
 
@@ -1644,22 +1644,51 @@ func _send_play(idx: int, end: String) -> void:
 	transport.request_play(idx, end)
 
 
-## Quién ocupa un puesto ajeno: su nombre, o "IA" si la silla la juega la máquina.
-## Jugando en local son todas de la máquina; en red hay que decir el nombre, porque
-## etiquetar de "IA" al amigo que tienes enfrente es mentirle al jugador.
-func _owner_name(seat: int) -> String:
+## Cómo se nombra un puesto en los textos: registro, avisos, resumen de la mano.
+##
+## Jugando solo son los nombres de brújula, que es lo único que hay. En red se usa el
+## nombre que cada quien puso: decirle "Norte" a alguien que se llama Beto no le dice nada
+## a los demás en la mesa, y el registro se vuelve ilegible.
+func _seat_label(seat: int) -> String:
+	if not online_mode:
+		return SEAT_NAMES[seat]
 	if seat < 0 or seat >= seat_owners.size():
-		return "IA"
+		return "AI Player 1"
 	var owner: String = str(seat_owners[seat])
-	if owner.is_empty():
-		return "IA"
-	return owner
+	if not owner.is_empty():
+		return owner
+	return "AI Player %d" % _ai_number(seat)
 
 
-## Lo mismo, con la marca que lleva junto al nombre del puesto en los paneles.
-func _owner_label(seat: int) -> String:
-	if seat < 0 or seat >= seat_owners.size():
-		return "(IA)"
-	if str(seat_owners[seat]).is_empty():
-		return "(IA)"
-	return "· %s" % str(seat_owners[seat])
+## Número de la máquina en esa silla, contando SOLO las sillas vacías y en orden. Así
+## salen "AI Player 1, 2, 3" seguidos, en vez de números con huecos que no significarían
+## nada para quien los lee.
+func _ai_number(seat: int) -> int:
+	var found: int = 0
+	for s in range(SEAT_COUNT):
+		if s >= seat_owners.size() or str(seat_owners[s]).is_empty():
+			found += 1
+			if s == seat:
+				return found
+	return 1
+
+
+## Igual, pero dejando claro que la mueve la máquina. Hace falta jugando solo, donde
+## "Norte" no lo dice; en red "AI Player 1" ya se explica solo.
+func _seat_title(seat: int) -> String:
+	if not online_mode:
+		return "%s (IA)" % SEAT_NAMES[seat]
+	return _seat_label(seat)
+
+
+## Cómo se nombra una pareja. En red son los dos nombres unidos: dejar "Sur-Norte" mientras
+## los puestos se llaman por su nombre haría que el marcador y la mesa hablaran idiomas
+## distintos.
+func _team_label(team: int) -> String:
+	if not online_mode:
+		return TEAM_NAMES[team]
+	var members: Array = []
+	for seat in range(SEAT_COUNT):
+		if _team_of(seat) == team:
+			members.append(_seat_label(seat))
+	return " y ".join(members)
