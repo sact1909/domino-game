@@ -26,6 +26,20 @@ const POS_LEFT := 3
 # de la mano, igual que en una mesa real cuando la cadena se acerca al borde.
 const ROW_LENGTH := 5
 
+# Medidas de los dos puestos laterales. El canal donde va el nombre girado sale de
+# restarle a la ventana el panel y las fichas, así que todo se calcula de acá.
+#
+# El canal mide 34 px para un texto de unos 19: queda ajustado a propósito. Con el canal
+# ancho el nombre flotaba lejos del borde y de las fichas a la vez, y no hace falta más
+# sitio porque el nombre nunca envuelve a una segunda línea.
+const SCREEN_SIZE := Vector2(1280, 900)
+const SIDE_PANEL_SIZE := Vector2(140, 456)
+const SIDE_TILE_SIZE := Vector2(88, 44)
+const SIDE_LEFT_POS := Vector2(8, 204)
+const SIDE_RIGHT_POS := Vector2(1132, 204)
+const SIDE_DOT_SIZE := 16.0
+const SIDE_TITLE_GAP := 7.0
+
 const LOBBY_SCENE := "res://scenes/Lobby.tscn"
 
 enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
@@ -296,66 +310,99 @@ func _build_own_panel() -> void:
 
 # En los laterales la etiqueta va DEBAJO de la pila de fichas, siguiendo la columna,
 # para que se lea junto a las fichas de ese jugador y no arriba, despegada de ellas.
+# Los dos puestos de los lados se arman igual: la columna de fichas centrada en el panel,
+# y el nombre GIRADO 90° en el canal que queda entre las fichas y el borde de la ventana.
+#
+# El nombre va girado para acompañar a las fichas, que también lo están, y va en el canal
+# porque es el hueco libre que le corresponde a ese puesto — el equivalente de la franja
+# que usa Norte encima de las suyas. Debajo de la columna quedaba a media pantalla, lejos
+# de las fichas que nombra.
+#
+# Un control girado no se lleva bien con los contenedores: el contenedor lo coloca por su
+# rectángulo SIN girar y el resultado no tiene nada que ver con lo que se ve. Por eso el
+# nombre y su bolita van colocados a mano, y solo las fichas quedan en el contenedor.
 func _build_left_panel() -> void:
-	var panel := VBoxContainer.new()
-	panel.position = Vector2(10, 204)
-	panel.size = Vector2(160, 456)
-	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	panel.add_theme_constant_override("separation", 8)
-	add_child(panel)
-
-	var center := CenterContainer.new()
-	panel.add_child(center)
-
-	left_stack = VBoxContainer.new()
-	left_stack.alignment = BoxContainer.ALIGNMENT_BEGIN
-	left_stack.add_theme_constant_override("separation", 6)
-	center.add_child(left_stack)
-
-	var title_row := HBoxContainer.new()
-	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	title_row.add_theme_constant_override("separation", 6)
-	panel.add_child(title_row)
-
-	turn_dots[POS_LEFT] = _make_turn_dot()
-	title_row.add_child(turn_dots[POS_LEFT])
-
-	left_title = Label.new()
-	left_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	left_title.custom_minimum_size = Vector2(110, 0)
-	left_title.add_theme_font_size_override("font_size", 14)
-	title_row.add_child(left_title)
+	left_stack = _build_side_panel(SIDE_LEFT_POS, POS_LEFT, true, func(lbl: Label): left_title = lbl)
 
 
 func _build_right_panel() -> void:
+	right_stack = _build_side_panel(SIDE_RIGHT_POS, POS_RIGHT, false, func(lbl: Label): right_title = lbl)
+
+
+func _build_side_panel(at: Vector2, screen_pos: int, toward_left_edge: bool, keep_title: Callable) -> VBoxContainer:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(1110, 204)
-	panel.size = Vector2(160, 456)
+	panel.position = at
+	panel.size = SIDE_PANEL_SIZE
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	panel.add_theme_constant_override("separation", 8)
 	add_child(panel)
 
+	# El centrador se queda con TODO el alto del panel, y dentro la columna queda en el
+	# medio sin importar cuántas fichas le falten. Sin esto colgaban del borde de arriba y
+	# se acortaban hacia abajo, mientras la columna de enfrente sí se mantenía centrada.
 	var center := CenterContainer.new()
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	panel.add_child(center)
 
-	right_stack = VBoxContainer.new()
-	right_stack.alignment = BoxContainer.ALIGNMENT_BEGIN
-	right_stack.add_theme_constant_override("separation", 6)
-	center.add_child(right_stack)
+	var stack := VBoxContainer.new()
+	stack.alignment = BoxContainer.ALIGNMENT_CENTER
+	stack.add_theme_constant_override("separation", 6)
+	center.add_child(stack)
 
-	var title_row := HBoxContainer.new()
-	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	title_row.add_theme_constant_override("separation", 6)
-	panel.add_child(title_row)
+	_build_side_title(screen_pos, toward_left_edge, keep_title)
+	return stack
 
-	turn_dots[POS_RIGHT] = _make_turn_dot()
-	title_row.add_child(turn_dots[POS_RIGHT])
 
-	right_title = Label.new()
-	right_title.autowrap_mode = TextServer.AUTOWRAP_WORD
-	right_title.custom_minimum_size = Vector2(110, 0)
-	right_title.add_theme_font_size_override("font_size", 14)
-	title_row.add_child(right_title)
+## Crea el nombre girado y su bolita. Colocarlos es otra cosa: depende de lo que mida el
+## texto, y eso solo se sabe cuando hay texto. Lo hace _layout_side_title() en cada
+## dibujado.
+func _build_side_title(screen_pos: int, toward_left_edge: bool, keep_title: Callable) -> void:
+	var dot: Panel = _make_turn_dot()
+	add_child(dot)
+	turn_dots[screen_pos] = dot
+
+	var title := Label.new()
+	# Sin envoltorio de línea: al girar, el ANCHO de la etiqueta pasa a ocupar alto —donde
+	# sobra sitio— y su ALTO pasa a ocupar el canal, que es lo escaso. Una segunda línea se
+	# comería el canal; un texto largo, en cambio, solo crece hacia donde hay espacio.
+	title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 14)
+	title.rotation_degrees = -90.0 if toward_left_edge else 90.0
+	add_child(title)
+	keep_title.call(title)
+
+
+## Coloca el nombre girado y su bolita, con la caja ajustada a lo que mide el texto.
+##
+## Ajustarla importa: con una caja fija más ancha que el texto, pegar el texto a un borde
+## dejaba un nombre arriba y el otro abajo —porque los lados leen en sentidos opuestos— y
+## centrarlo lo alejaba de la bolita. Con la caja a medida se puede centrar el NOMBRE en
+## los dos lados y dejar la bolita pegada a él.
+func _layout_side_title(title: Label, dot: Panel, at: Vector2, toward_left_edge: bool) -> void:
+	# La caja se ajusta al texto en las dos dimensiones. Un alto fijo dejaba aire arriba y
+	# abajo que, al girar, se convertía en hueco contra el borde y contra las fichas.
+	var natural: Vector2 = title.get_minimum_size()
+	var text_length: float = natural.x
+	title.size = natural
+	# Se gira alrededor de su propio centro: así basta con colocar ese centro donde se
+	# quiere y el giro no lo desplaza.
+	title.pivot_offset = title.size / 2.0
+
+	var tiles_left: float = at.x + (SIDE_PANEL_SIZE.x - SIDE_TILE_SIZE.x) / 2.0
+	var lane_x: float = tiles_left / 2.0
+	if not toward_left_edge:
+		lane_x = (tiles_left + SIDE_TILE_SIZE.x + SCREEN_SIZE.x) / 2.0
+
+	# El nombre va centrado en el alto del panel en los dos lados, para que se vean a la
+	# misma altura. La bolita se pega justo antes de donde EMPIEZA el texto según el
+	# sentido de lectura de ese lado: abajo en el izquierdo, arriba en el derecho.
+	var middle_y: float = at.y + SIDE_PANEL_SIZE.y / 2.0
+	var dot_offset: float = text_length / 2.0 + SIDE_TITLE_GAP + SIDE_DOT_SIZE / 2.0
+	var dot_y: float = middle_y + dot_offset if toward_left_edge else middle_y - dot_offset
+
+	title.position = Vector2(lane_x, middle_y) - title.size / 2.0
+	dot.position = Vector2(lane_x - SIDE_DOT_SIZE / 2.0, dot_y - SIDE_DOT_SIZE / 2.0)
 
 
 func _build_board_area() -> void:
@@ -485,9 +532,14 @@ func _apply_dialog_style(panel: PanelContainer, margin: float = 22.0) -> void:
 	panel.add_theme_stylebox_override("panel", sb)
 
 
+## Bolita de turno. Tiene que quedar CUADRADA para que el redondeo la haga un círculo:
+## dentro de un HBoxContainer los hijos se estiran al alto de la fila, y con una etiqueta
+## de dos líneas quedaba de 16x36 — una pastilla, no un círculo. SHRINK_CENTER la deja en
+## su tamaño y la centra verticalmente junto al texto.
 func _make_turn_dot() -> Panel:
 	var dot := Panel.new()
 	dot.custom_minimum_size = Vector2(16, 16)
+	dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.25, 0.32, 0.26)
 	sb.set_corner_radius_all(8)
@@ -1517,14 +1569,16 @@ func _render_top_backs() -> void:
 
 func _render_side_stacks() -> void:
 	var left_seat: int = _seat_at(POS_LEFT)
-	left_title.text = _rival_label(left_seat, true)
+	left_title.text = _rival_label(left_seat, false)
+	_layout_side_title(left_title, turn_dots[POS_LEFT], SIDE_LEFT_POS, true)
 	for c in left_stack.get_children():
 		c.queue_free()
 	for i in range(pub.hand_counts[left_seat]):
 		left_stack.add_child(_make_tile_back(88, 44))
 
 	var right_seat: int = _seat_at(POS_RIGHT)
-	right_title.text = _rival_label(right_seat, true)
+	right_title.text = _rival_label(right_seat, false)
+	_layout_side_title(right_title, turn_dots[POS_RIGHT], SIDE_RIGHT_POS, false)
 	for c in right_stack.get_children():
 		c.queue_free()
 	for i in range(pub.hand_counts[right_seat]):
