@@ -14,10 +14,20 @@ extends Transport
 ## elegir silla—, que en el modo local no existe porque no hay a quién esperar. Eso lo
 ## usa la pantalla del lobby; la pantalla de juego sigue viendo solo el contrato.
 
-## A dónde conectar si no se dice otra cosa. Hoy apunta a un servidor local: la URL del
-## servidor desplegado lleva la IP adentro, y ponerla acá la publica en el repositorio.
-## Para jugar en internet se pasa --server-url=wss://... o se cambia esta constante.
-const DEFAULT_URL := "ws://127.0.0.1:8090"
+## A dónde conectar cuando nadie dice otra cosa. Es solo el respaldo para desarrollo: en
+## un ejecutable repartido la dirección de verdad viene horneada (ver BAKED_URL_PATH).
+const FALLBACK_URL := "ws://127.0.0.1:8090"
+
+## Archivo con la dirección del servidor, escrito al compilar por tools/build_windows.sh
+## y empaquetado dentro del ejecutable.
+##
+## Se hornea en vez de escribirla en el código para que la dirección del servidor no
+## quede publicada en el repositorio, que es público. El precio es que cambiar de
+## servidor obliga a volver a generar el ejecutable, cosa que pasa muy de vez en cuando.
+##
+## Es un archivo suelto y no una constante a propósito: así el repositorio se compila sin
+## él y sale un ejecutable de desarrollo que apunta a localhost.
+const BAKED_URL_PATH := "res://server_url.txt"
 
 ## Estado del enlace. Se distingue "conectando" de "abierto" porque mandar algo antes
 ## de que el socket esté listo se pierde sin aviso.
@@ -71,16 +81,28 @@ func _init(url: String = "") -> void:
 	_url = url if not url.is_empty() else resolve_url()
 
 
-## URL del servidor desde la línea de comandos, para poder probar contra un servidor
-## local sin recompilar:  godot -- --server-url=ws://127.0.0.1:8090
-static func resolve_url() -> String:
+## URL pasada por línea de comandos, o cadena vacía si no vino ninguna. Se distingue de
+## resolve_url() porque quien la pasó explícitamente manda sobre cualquier valor guardado:
+## si no, una URL vieja en el disco ganaría sobre lo que se acaba de escribir a propósito.
+static func url_from_command_line() -> String:
 	for arg in OS.get_cmdline_user_args():
 		var text: String = str(arg)
 		if text.begins_with("--server-url="):
-			var value: String = text.substr(13)
-			if not value.is_empty():
-				return value
-	return DEFAULT_URL
+			return text.substr(13)
+	return ""
+
+
+## A dónde conectar por defecto:  godot -- --server-url=ws://127.0.0.1:8090
+static func resolve_url() -> String:
+	# El orden importa: lo que se pasa a propósito para esta corrida gana sobre lo que se
+	# horneó al compilar, y eso gana sobre el respaldo de desarrollo.
+	var from_args: String = url_from_command_line()
+	if not from_args.is_empty():
+		return from_args
+	var baked: String = baked_url()
+	if not baked.is_empty():
+		return baked
+	return FALLBACK_URL
 
 
 func url() -> String:
@@ -346,3 +368,15 @@ func _replay() -> void:
 		_emit_snapshot(_last_pub, _last_mine)
 	if _hand_live:
 		_emit_hand_started()
+
+
+## La dirección horneada al compilar, o cadena vacía si este ejecutable no trae ninguna.
+## La pantalla también la consulta: si hay una horneada, esconde el campo del servidor,
+## porque quien recibe el juego no tiene por qué escribir nada.
+static func baked_url() -> String:
+	if not FileAccess.file_exists(BAKED_URL_PATH):
+		return ""
+	var file := FileAccess.open(BAKED_URL_PATH, FileAccess.READ)
+	if file == null:
+		return ""
+	return file.get_as_text().strip_edges()

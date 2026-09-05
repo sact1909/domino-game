@@ -121,6 +121,88 @@ que ya pasó.
 Lo único que se puede perder en esa ventana es alguna línea del registro de la mesa: el
 estado del tablero viene del snapshot, que sí se repite.
 
+## Repartir el juego a los amigos (Windows)
+
+El proyecto trae dos presets de exportación en `export_presets.cfg`, que **se versiona a
+propósito**:
+
+| Preset | Para qué | Notas |
+|---|---|---|
+| `Linux` | El servidor dedicado | `dedicated_server=true`, sin las imágenes de fichas |
+| `Windows` | El juego | Un solo `.exe`, con todo adentro |
+
+### Una sola vez: las plantillas
+
+Sin ellas la exportación falla. En el editor: **Editor → Administrar plantillas de
+exportación → Descargar y instalar**, de la misma versión de Godot que el proyecto.
+
+**El error no se ve si no se pide.** Godot lo manda a *stderr* y sale con código 1, pero
+en la salida normal solo aparecen las líneas del escaneo y parece que no pasó nada. Si
+el comando "no hace nada", correrlo así dice exactamente qué falta:
+
+```bash
+godot --headless --export-release "Windows" build/windows/DominoDominicano.exe 2>&1
+```
+
+**Ojo con las instalaciones portables.** Si junto al ejecutable de Godot hay un archivo
+`._sc_`, está en *modo autocontenido*: ignora `%APPDATA%` y busca las plantillas en su
+propio `editor_data`. Con scoop eso pasa, y las plantillas bajadas a la ruta de siempre
+no las encuentra. La ruta buena es la que dice el propio error.
+
+### Exportar
+
+```bash
+tools/build_windows.sh wss://mi-servidor
+```
+
+Sale un `.exe` único —el preset lleva `embed_pck=true`— que se copia y se manda tal cual.
+`build/` está en el `.gitignore`, así que no se sube al repositorio.
+
+Sin argumento genera una compilación de desarrollo que apunta a `localhost` y **muestra**
+el campo del servidor. Con una dirección la **hornea** dentro del ejecutable y **esconde**
+el campo: quien lo recibe no tiene nada que escribir ni que romper sin querer.
+
+También se puede exportar desde el editor (**Proyecto → Exportar → Windows**), pero eso
+no hornea nada: sale la versión de desarrollo.
+
+La dirección del servidor **no está en el repositorio a propósito**, así que hay que
+tenerla a mano: es la URL pública del servicio en Coolify, con `wss://` en vez de
+`https://`. Conviene guardarla donde no se pierda, porque sin ella no se puede generar
+un ejecutable repartible.
+
+#### Por qué la dirección se hornea y no se escribe en el código
+
+El guion la deja en un archivo suelto que se empaqueta dentro del ejecutable y **se borra
+al terminar**, pase lo que pase. Así la dirección del servidor no queda publicada en el
+repositorio, que es abierto, y las corridas de desarrollo no heredan sin querer el
+servidor de producción. El precio es que cambiar de servidor obliga a volver a generar el
+ejecutable.
+
+Quién gana cuando hay varias:
+
+| Prioridad | De dónde sale | Para qué |
+|---|---|---|
+| 1 | `--server-url=...` | Apuntar a otro sitio en una corrida concreta |
+| 2 | Lo que el jugador guardó en el lobby | Solo si el campo está visible |
+| 3 | La horneada al compilar | Lo que usan quienes reciben el juego |
+| 4 | `localhost` | Desarrollo |
+
+El lobby escribe en el registro a qué servidor apunta al arrancar. En un ejecutable
+repartido, sin el campo a la vista, es la única forma de averiguarlo cuando alguien dice
+que no conecta.
+
+### Lo que van a ver tus amigos
+
+Dos cosas que conviene avisarles de antemano:
+
+- **Windows va a mostrar "Windows protegió su PC"** porque el ejecutable no está firmado.
+  Hay que darle a *Más información → Ejecutar de todas formas*. No hay forma de evitarlo
+  sin un certificado de firma de código, que se paga.
+- **El servidor tiene que estar corriendo** y ser el mismo que se horneó. Si no, van a
+  ver "No se pudo conectar" sin más pistas: el registro dice a cuál está apuntando.
+
+El nombre que escriban se guarda en `user://lobby.cfg` y vuelve solo la próxima vez.
+
 ## Reglas implementadas
 
 Basadas en la guía del dominó dominicano (formato estándar de 4 jugadores):
@@ -210,6 +292,7 @@ scripts/server/RoomRegistry.gd  Todas las salas vivas, y su recolección al venc
 scripts/tests/RulesTest.gd Arnés de reglas y de la secuencia de la sesión
 scripts/tests/ServerTest.gd  Arnés de salas, códigos y protocolo (sin abrir puertos)
 scripts/tests/NetTest.gd   Prueba de red con dos clientes reales (necesita el servidor)
+tools/build_windows.sh     Genera el .exe, con la dirección del servidor adentro
 docker/Dockerfile          Build del servidor dedicado
 DominoTiles/*.png          Las 28 imágenes de fichas (128x256 cada una)
 ```

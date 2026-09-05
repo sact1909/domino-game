@@ -48,3 +48,7 @@ $RECYCLE.BIN/
 .idea/
 *.swp
 *~
+
+# Dirección del servidor horneada al compilar (la escribe tools/build_windows.sh).
+# No se versiona: es de cada despliegue, no del proyecto.
+/server_url.txt

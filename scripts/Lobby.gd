@@ -15,6 +15,11 @@ extends Control
 
 const GAME_SCENE := "res://scenes/Main.tscn"
 
+## Dónde se recuerdan el nombre y el servidor. "user://" es la carpeta de datos del
+## jugador, aparte del juego: sirve igual en un ejecutable repartido, donde la carpeta de
+## instalación puede ser de solo lectura.
+const SETTINGS_PATH := "user://lobby.cfg"
+
 ## Nombres de los puestos, en el mismo orden que en la mesa. Acá son la IDENTIDAD de la
 ## silla: los enfrentados (0-2 y 1-3) son compañeros, y por eso elegir silla es elegir
 ## pareja.
@@ -83,6 +88,11 @@ func _ready() -> void:
 	_build_room()
 	_show_screen(Screen.ENTRY)
 
+	# Queda en el registro a qué servidor apunta esta copia. Es lo primero que hay que
+	# saber cuando alguien reporta que "no conecta", y en un ejecutable repartido es la
+	# única forma de averiguarlo sin el campo a la vista.
+	print("[lobby] servidor: %s" % url_field.text.strip_edges())
+
 	# Puede haber un socket esperando en el buzón: es la vuelta desde la mesa cuando se
 	# pide revancha. En ese caso no hay nada que conectar, la sala sigue siendo la misma
 	# y begin() repite el estado para volver a pintarla.
@@ -119,9 +129,12 @@ func _build_entry() -> void:
 	name_field = _field(vb, "Tu nombre", "Jugador")
 	name_field.max_length = 16
 
-	# El servidor se puede cambiar acá para no tener que recompilar. Sale de
-	# WsClientTransport, así que --server-url= también lo prellena.
+	# El campo del servidor solo aparece si este ejecutable NO trae la dirección horneada.
+	# Cuando la trae —que es como se reparte a los amigos— no hay nada que escribir, y un
+	# campo con una dirección rara es una invitación a romperlo sin querer.
 	url_field = _field(vb, "Servidor", WsClientTransport.resolve_url())
+	if not WsClientTransport.baked_url().is_empty():
+		url_field.get_parent().visible = false
 
 	var create_btn := Button.new()
 	create_btn.text = "Crear una sala nueva"
@@ -150,6 +163,8 @@ func _build_entry() -> void:
 	status_label.custom_minimum_size = Vector2(520, 20)
 	status_label.add_theme_color_override("font_color", Color(1, 0.85, 0.5))
 	vb.add_child(status_label)
+
+	_load_settings()
 
 	var back_btn := Button.new()
 	back_btn.text = "Volver a jugar contra la máquina"
@@ -265,6 +280,7 @@ func _connect_and(action: Dictionary) -> void:
 	if transport != null:
 		return
 	_pending = action
+	_save_settings()
 	_set_status("Conectando…")
 	_set_entry_enabled(false)
 
@@ -607,3 +623,40 @@ func _style(panel: PanelContainer) -> void:
 	sb.set_corner_radius_all(10)
 	sb.set_content_margin_all(22)
 	panel.add_theme_stylebox_override("panel", sb)
+
+
+# ===========================================================================
+# Lo que se recuerda entre sesiones
+# ===========================================================================
+## El nombre y el servidor se guardan para no volver a escribirlos. Importa más de lo que
+## parece: si el juego se reparte sin la dirección horneada, cada jugador la pega una vez
+## y no la vuelve a ver nunca.
+func _load_settings() -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS_PATH) != OK:
+		return
+
+	var saved_name: String = str(cfg.get_value("lobby", "name", ""))
+	if not saved_name.is_empty():
+		name_field.text = saved_name
+
+	# La URL guardada solo se usa si el jugador de verdad puede elegirla. Si vino por
+	# línea de comandos se escribió a propósito para esta corrida, y si viene horneada el
+	# campo ni se muestra: en los dos casos una dirección vieja del disco solo estorba.
+	if not WsClientTransport.url_from_command_line().is_empty():
+		return
+	if not WsClientTransport.baked_url().is_empty():
+		return
+	var saved_url: String = str(cfg.get_value("lobby", "url", ""))
+	if not saved_url.is_empty():
+		url_field.text = saved_url
+
+
+func _save_settings() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("lobby", "name", name_field.text.strip_edges())
+	cfg.set_value("lobby", "url", url_field.text.strip_edges())
+	# Si no se puede escribir no pasa nada grave: solo hay que volver a teclearlos.
+	var err: int = cfg.save(SETTINGS_PATH)
+	if err != OK:
+		push_warning("No se pudieron guardar los ajustes del lobby (error %d)." % err)
