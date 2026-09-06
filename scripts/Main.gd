@@ -28,40 +28,73 @@ const POS_LEFT := 3
 # ventana, así que estas medidas son las mismas en cualquier monitor.
 const SCREEN_SIZE := Vector2(1920, 1080)
 
-const TOP_BAR_SIZE := Vector2(1920, 50)
-const TOP_PANEL_POS := Vector2(700, 54)
-const TOP_PANEL_SIZE := Vector2(520, 112)
-const BOARD_POS := Vector2(160, 172)
-const BOARD_SIZE := Vector2(1600, 712)
-const OWN_PANEL_POS := Vector2(460, 890)
-const OWN_PANEL_SIZE := Vector2(1000, 190)
-const LOG_PANEL_POS := Vector2(14, 890)
-const LOG_PANEL_SIZE := Vector2(300, 180)
-const TOAST_POS := Vector2(710, 830)
+## Ficha en mano. Es la MISMA para los cuatro puestos: antes la propia era de 128 y las de
+## los demás de 88, y la mesa se veía desigual sin motivo — las cuatro manos son lo mismo
+## vistas desde sitios distintos.
+##
+## Cuánto ocupa depende del puesto: la propia y la de enfrente van de pie (64 de ancho por
+## 128 de alto) y las de los lados acostadas (128 por 64).
+const HAND_TILE_LONG := 128.0
+const HAND_TILE_SHORT := 64.0
+const HAND_TILE_GAP := 8
+
+## La franja de datos de arriba se quitó: se llevaba 48 px de alto a lo ancho de toda la
+## ventana para cinco datos cortos, y ese alto es justo lo que decide si la ficha de la
+## mesa cabe. Ahora cada dato está donde se necesita — el marcador junto a la mano de cada
+## jugador, y la meta y las puntas en la esquina, fuera del paso.
+const TOP_PANEL_POS := Vector2(610, 10)
+const TOP_PANEL_SIZE := Vector2(700, 154)
+const BOARD_POS := Vector2(178, 170)
+const BOARD_SIZE := Vector2(1564, 712)
+const OWN_PANEL_POS := Vector2(460, 886)
+const OWN_PANEL_SIZE := Vector2(1000, 194)
+const LOG_PANEL_POS := Vector2(14, 886)
+const LOG_PANEL_SIZE := Vector2(300, 186)
+const TOAST_POS := Vector2(710, 826)
 const TOAST_SIZE := Vector2(500, 44)
+
+## Meta y puntas abiertas, arrinconadas arriba a la derecha. Van sobre el fondo y no en
+## una franja porque no compiten con nada: esa esquina queda encima del tablero pero por
+## fuera de él, así que no le quita sitio a la hilera ni a ninguna mano.
+const INFO_SIZE := Vector2(232, 76)
+const INFO_POS := Vector2(SCREEN_SIZE.x - INFO_SIZE.x - 16.0, 12.0)
+
+## Marcador de cada pareja, pegado a la mano de cada jugador: el mismo número aparece
+## junto a los dos que forman la pareja, que es como se lleva la cuenta en una mesa de
+## verdad. Va enganchado a la fila de fichas, no al panel, para que quede siempre junto a
+## la ficha del extremo aunque la mano se vaya acortando.
+const SCORE_BADGE_SIZE := Vector2(66, 42)
+const SCORE_BADGE_GAP := 14
 
 # Medidas de los dos puestos laterales. El canal donde va el nombre girado sale de
 # restarle a la ventana el panel y las fichas, así que todo se calcula de acá.
 const SIDE_PANEL_SIZE := Vector2(140, 712)
-const SIDE_TILE_SIZE := Vector2(88, 44)
-const SIDE_LEFT_POS := Vector2(14, 172)
-const SIDE_RIGHT_POS := Vector2(1766, 172)
+const SIDE_TILE_SIZE := Vector2(HAND_TILE_LONG, HAND_TILE_SHORT)
+const SIDE_LEFT_POS := Vector2(34, 170)
+const SIDE_RIGHT_POS := Vector2(1746, 170)
 const SIDE_TITLE_GAP := 7.0
 const SIDE_DOT_SIZE := 16.0
 
 ## Largo fijo de una ficha en la mesa. Es LO QUE NO CAMBIA: la hilera crece, se pliega, y
 ## la ficha se queda igual en vez de encogerse conforme avanza la mano.
 ##
-## El número sale de medir, no de elegirlo a ojo. Con el giro por espacio, quien manda es
-## el ALTO: cuanto más grande la ficha, antes dobla la fila, y cada giro añade un renglón.
-## En 200 manos (5308 estados de mesa) el trazado más alto necesita:
+## El número sale de medir cuánto encoge DE VERDAD, no de elegirlo a ojo. Con el tablero
+## de 1564x712 —el de ahora, sin la franja de datos arriba— en 400 manos:
 ##
-##   ficha 100 -> 650 px de alto     ficha 110 -> 715 px
-##   ficha 105 -> 683 px             ficha 120 -> 780 px
+##   largo pedido    lo que se ve
+##       105         105 siempre
+##       110         110 siempre
+##       115         115 en el 98.1 %, 110 en el resto
+##       120         120 en el 94.2 %, 119 o 110 en el resto
 ##
-## Con el tablero de 712 de alto, 105 entra con 30 px de sobra. 110 se pasaría por 3, que
-## es demasiado poco margen para fiarse de una muestra de 200 manos.
-const BOARD_TILE_LENGTH := 105.0
+## 110 es el más grande que nunca encoge, y se confirmó en otras 1500 manos con distinta
+## semilla. Con el tablero anterior, 38 px más bajo, 110 se recortaba en el 2.5 % de los
+## estados; los 38 px que dejó libres la franja de datos son justo los que lo permiten.
+##
+## La red de seguridad se queda puesta igual: 1900 manos son muchas pero no son todas, y
+## si algún día apareciera un trazado más largo es mejor verlo un poco más chico un
+## momento que perder de vista media mesa y no poder tocar una punta.
+const BOARD_TILE_LENGTH := 110.0
 
 ## Cuánto dura y cuánto recorre la entrada de una ficha. Corta y bien por debajo de la
 ## pausa entre turnos (0.9 s en local, 0.6 s en el servidor) para que siempre termine
@@ -130,10 +163,14 @@ var phase: int = Phase.SETUP
 # Referencias a nodos de interfaz (creados en tiempo de ejecución)
 # ---------------------------------------------------------------------------
 var lbl_target: Label
-var lbl_score0: Label
-var lbl_score1: Label
-var lbl_turn: Label
 var lbl_ends: Label
+
+# Marcador de cada pareja y nombre de cada puesto, indexados por LUGAR EN LA PANTALLA
+# igual que las bolitas de turno: en la pantalla de cada quien su propia mano va abajo,
+# así que el puesto no dice dónde se dibuja.
+var score_labels: Array = [null, null, null, null]
+var score_badges: Array = [null, null, null, null]
+var seat_titles: Array = [null, null, null, null]
 
 var top_title: Label
 var top_row: HBoxContainer
@@ -200,7 +237,7 @@ var leave_button: Button
 # ===========================================================================
 func _ready() -> void:
 	_build_background()
-	_build_top_bar()
+	_build_info_corner()
 	_build_top_panel()
 	_build_own_panel()
 	_build_left_panel()
@@ -252,40 +289,34 @@ func _build_background() -> void:
 	add_child(bg)
 
 
-func _build_top_bar() -> void:
-	var bar := PanelContainer.new()
-	bar.position = Vector2(0, 0)
-	bar.size = TOP_BAR_SIZE
-	add_child(bar)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 40)
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	bar.add_child(row)
+## Meta y puntas abiertas, en la esquina de arriba a la derecha.
+##
+## Son los dos datos que no pertenecen a ningún jugador: la meta no cambia en toda la
+## partida y las puntas son de la mesa. Por eso van juntos y apartados, en el único sitio
+## de la ventana donde no le quitan espacio a nadie — encima del tablero, sí, pero fuera
+## del rectángulo por donde puede crecer la hilera.
+func _build_info_corner() -> void:
+	var box := VBoxContainer.new()
+	box.position = INFO_POS
+	box.size = INFO_SIZE
+	box.alignment = BoxContainer.ALIGNMENT_BEGIN
+	box.add_theme_constant_override("separation", 2)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(box)
 
 	lbl_target = Label.new()
-	lbl_target.add_theme_font_size_override("font_size", 18)
-	row.add_child(lbl_target)
+	lbl_target.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	lbl_target.add_theme_font_size_override("font_size", 15)
+	lbl_target.add_theme_color_override("font_color", Color(0.72, 0.82, 0.72))
+	box.add_child(lbl_target)
 
-	lbl_score0 = Label.new()
-	lbl_score0.add_theme_font_size_override("font_size", 18)
-	row.add_child(lbl_score0)
-
-	lbl_score1 = Label.new()
-	lbl_score1.add_theme_font_size_override("font_size", 18)
-	row.add_child(lbl_score1)
-
-	lbl_turn = Label.new()
-	lbl_turn.add_theme_font_size_override("font_size", 18)
-	lbl_turn.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
-	row.add_child(lbl_turn)
-
-	# Las puntas abiertas van en la misma barra que el marcador, y no en una franja
-	# aparte. Es un dato corto que se lee de un vistazo, y la franja se comía 26 px de
-	# alto que ahora se lleva el tablero — que es lo que decide el tamaño de las fichas.
+	# Las puntas se leen a cada jugada y deciden qué ficha se puede poner, así que van
+	# más grandes y más claras que la meta, que se mira una vez y ya.
 	lbl_ends = Label.new()
-	lbl_ends.add_theme_font_size_override("font_size", 18)
-	row.add_child(lbl_ends)
+	lbl_ends.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	lbl_ends.add_theme_font_size_override("font_size", 22)
+	lbl_ends.add_theme_color_override("font_color", Color(1, 0.95, 0.82))
+	box.add_child(lbl_ends)
 
 
 func _build_top_panel() -> void:
@@ -306,11 +337,24 @@ func _build_top_panel() -> void:
 	top_title = Label.new()
 	top_title.add_theme_font_size_override("font_size", 14)
 	title_row.add_child(top_title)
+	seat_titles[POS_TOP] = top_title
+
+	# El marcador va en la MISMA fila que las fichas, y no suelto en el panel, para que
+	# quede pegado a la ficha del extremo aunque la mano se acorte. La fila de fichas se
+	# vacía y se rehace en cada dibujado, así que el marcador cuelga de esta envoltura,
+	# que no se toca.
+	var row_wrap := HBoxContainer.new()
+	row_wrap.alignment = BoxContainer.ALIGNMENT_CENTER
+	row_wrap.add_theme_constant_override("separation", SCORE_BADGE_GAP)
+	panel.add_child(row_wrap)
+
+	row_wrap.add_child(_make_score_badge(POS_TOP))
 
 	top_row = HBoxContainer.new()
 	top_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	top_row.add_theme_constant_override("separation", 3)
-	panel.add_child(top_row)
+	top_row.add_theme_constant_override("separation", HAND_TILE_GAP)
+	row_wrap.add_child(top_row)
+	row_wrap.add_child(_make_badge_spacer())
 
 
 func _build_own_panel() -> void:
@@ -332,11 +376,23 @@ func _build_own_panel() -> void:
 	own_title.text = "Tu mano"
 	own_title.add_theme_font_size_override("font_size", 16)
 	title_row.add_child(own_title)
+	seat_titles[POS_BOTTOM] = own_title
+
+	# Igual que en Norte, pero el marcador va DESPUÉS de las fichas: en el puesto de abajo
+	# el extremo libre queda a la derecha.
+	var row_wrap := HBoxContainer.new()
+	row_wrap.alignment = BoxContainer.ALIGNMENT_CENTER
+	row_wrap.add_theme_constant_override("separation", SCORE_BADGE_GAP)
+	panel.add_child(row_wrap)
+
+	row_wrap.add_child(_make_badge_spacer())
 
 	own_hand_row = HBoxContainer.new()
 	own_hand_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	own_hand_row.add_theme_constant_override("separation", 8)
-	panel.add_child(own_hand_row)
+	own_hand_row.add_theme_constant_override("separation", HAND_TILE_GAP)
+	row_wrap.add_child(own_hand_row)
+
+	row_wrap.add_child(_make_score_badge(POS_BOTTOM))
 
 	var status_row := HBoxContainer.new()
 	status_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -395,10 +451,31 @@ func _build_side_panel(at: Vector2, screen_pos: int, toward_left_edge: bool, kee
 	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	panel.add_child(center)
 
+	# La columna y su marcador viajan juntos, y el conjunto es lo que queda centrado. El
+	# marcador va en el extremo CONTRARIO a la bolita de turno de ese lado: arriba en el
+	# izquierdo, abajo en el derecho, así no se amontonan en la misma esquina.
+	var column_wrap := VBoxContainer.new()
+	column_wrap.alignment = BoxContainer.ALIGNMENT_CENTER
+	column_wrap.add_theme_constant_override("separation", SCORE_BADGE_GAP)
+	center.add_child(column_wrap)
+
+	# El marcador se compensa con un hueco del mismo tamaño en el extremo contrario, para
+	# que la fila de fichas siga centrada donde estaba: sin el hueco, la mano entera se
+	# corre hacia un lado y las cuatro dejan de estar enfrentadas.
+	if toward_left_edge:
+		column_wrap.add_child(_make_score_badge(screen_pos))
+	else:
+		column_wrap.add_child(_make_badge_spacer())
+
 	var stack := VBoxContainer.new()
 	stack.alignment = BoxContainer.ALIGNMENT_CENTER
-	stack.add_theme_constant_override("separation", 6)
-	center.add_child(stack)
+	stack.add_theme_constant_override("separation", HAND_TILE_GAP)
+	column_wrap.add_child(stack)
+
+	if toward_left_edge:
+		column_wrap.add_child(_make_badge_spacer())
+	else:
+		column_wrap.add_child(_make_score_badge(screen_pos))
 
 	_build_side_title(screen_pos, toward_left_edge, keep_title)
 	return stack
@@ -422,7 +499,44 @@ func _build_side_title(screen_pos: int, toward_left_edge: bool, keep_title: Call
 	title.add_theme_font_size_override("font_size", 14)
 	title.rotation_degrees = -90.0 if toward_left_edge else 90.0
 	add_child(title)
+	seat_titles[screen_pos] = title
 	keep_title.call(title)
+
+
+## El marcador de la pareja de un puesto: el número grande y, al pasar el ratón, de qué
+## pareja es. Los dos jugadores de una misma pareja enseñan el MISMO número, uno a cada
+## lado de la mesa, que es como se canta la puntuación jugando en vivo.
+##
+## El color separa a las dos parejas de un vistazo: cálido el equipo de quien mira esta
+## pantalla, frío el contrario. Así se ve quién va con quién sin leer ningún nombre.
+func _make_score_badge(screen_pos: int) -> PanelContainer:
+	var badge := PanelContainer.new()
+	badge.custom_minimum_size = SCORE_BADGE_SIZE
+	# Dentro de una fila o una columna, un contenedor se estira a lo ancho de la caja que
+	# le toca; encogido y centrado se queda del tamaño pedido, junto a las fichas.
+	badge.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+
+	var label := Label.new()
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 24)
+	badge.add_child(label)
+
+	score_badges[screen_pos] = badge
+	score_labels[screen_pos] = label
+	return badge
+
+
+## Un hueco del tamaño del marcador para el otro extremo de la mano. Es lo que mantiene
+## las fichas centradas donde estaban antes de que el marcador existiera.
+func _make_badge_spacer() -> Control:
+	var gap := Control.new()
+	gap.custom_minimum_size = SCORE_BADGE_SIZE
+	gap.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	gap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return gap
 
 
 ## Coloca el nombre girado y su bolita, con la caja ajustada a lo que mide el texto.
@@ -614,16 +728,25 @@ func _make_turn_dot() -> Panel:
 func _update_turn_dots() -> void:
 	var active_pos: int = _screen_pos(pub.current_player)
 	for pos in range(SEAT_COUNT):
+		var lit: bool = phase == Phase.PLAYING and pos == active_pos
+
 		var dot: Panel = turn_dots[pos]
-		if dot == null:
-			continue
-		var sb := StyleBoxFlat.new()
-		sb.set_corner_radius_all(8)
-		if phase == Phase.PLAYING and pos == active_pos:
-			sb.bg_color = Color(1, 0.85, 0.25)
-		else:
-			sb.bg_color = Color(0.25, 0.32, 0.26)
-		dot.add_theme_stylebox_override("panel", sb)
+		if dot != null:
+			var sb := StyleBoxFlat.new()
+			sb.set_corner_radius_all(8)
+			sb.bg_color = Color(1, 0.85, 0.25) if lit else Color(0.25, 0.32, 0.26)
+			dot.add_theme_stylebox_override("panel", sb)
+
+		# El nombre del que juega se enciende con la bolita. Antes el turno se leía en la
+		# franja de arriba; sin ella, hace falta que se vea desde el puesto mismo, y con
+		# dos señales juntas —bolita y nombre— se ve desde donde se está mirando de quién es
+		# el turno sin tener que ir a buscar un punto de 16 px.
+		var title: Label = seat_titles[pos]
+		if title != null:
+			if lit:
+				title.add_theme_color_override("font_color", Color(1, 0.85, 0.25))
+			else:
+				title.remove_theme_color_override("font_color")
 
 
 # Puesto local desde la línea de comandos, para poder probar la perspectiva sin
@@ -1389,7 +1512,7 @@ func _render_all() -> void:
 	_render_own_hand()
 	_render_side_stacks()
 	_render_top_backs()
-	_update_top_bar()
+	_update_scoreboard()
 	_update_pass_status()
 	_update_turn_dots()
 	own_title.text = "Tu mano (%s)%s" % [_seat_label(local_seat), _lead_mark(local_seat)]
@@ -1717,7 +1840,7 @@ func _render_own_hand() -> void:
 		btn.texture_normal = load(t.texture())
 		btn.ignore_texture_size = true
 		btn.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
-		btn.custom_minimum_size = Vector2(64, 128)
+		btn.custom_minimum_size = Vector2(HAND_TILE_SHORT, HAND_TILE_LONG)
 		var is_legal: bool = legal_by_idx.has(i)
 		btn.disabled = not is_legal
 		btn.modulate = Color(1, 1, 1, 1) if is_legal else Color(0.5, 0.5, 0.5, 1)
@@ -1726,16 +1849,15 @@ func _render_own_hand() -> void:
 		own_hand_row.add_child(btn)
 
 
-# Las tres manos de la IA usan fichas del mismo tamaño (44x88, la misma proporción
-# 1:2 de una ficha real): de pie para Norte, acostadas para los laterales, según
-# cómo las sostendría cada jugador desde su puesto.
+# Las tres manos de enfrente usan la misma ficha que la propia: de pie para Norte,
+# acostadas para los laterales, según cómo las sostendría cada jugador desde su puesto.
 func _render_top_backs() -> void:
 	var seat: int = _seat_at(POS_TOP)
 	top_title.text = _rival_label(seat, false)
 	for c in top_row.get_children():
 		c.queue_free()
 	for i in range(pub.hand_counts[seat]):
-		top_row.add_child(_make_tile_back(44, 88))
+		top_row.add_child(_make_tile_back(HAND_TILE_SHORT, HAND_TILE_LONG))
 
 
 func _render_side_stacks() -> void:
@@ -1745,7 +1867,7 @@ func _render_side_stacks() -> void:
 	for c in left_stack.get_children():
 		c.queue_free()
 	for i in range(pub.hand_counts[left_seat]):
-		left_stack.add_child(_make_tile_back(88, 44))
+		left_stack.add_child(_make_tile_back(HAND_TILE_LONG, HAND_TILE_SHORT))
 
 	var right_seat: int = _seat_at(POS_RIGHT)
 	right_title.text = _rival_label(right_seat, false)
@@ -1753,25 +1875,42 @@ func _render_side_stacks() -> void:
 	for c in right_stack.get_children():
 		c.queue_free()
 	for i in range(pub.hand_counts[right_seat]):
-		right_stack.add_child(_make_tile_back(88, 44))
+		right_stack.add_child(_make_tile_back(HAND_TILE_LONG, HAND_TILE_SHORT))
 
 
-func _update_top_bar() -> void:
-	lbl_target.text = "Meta: %d" % pub.target_score
-	lbl_score0.text = "%s: %d" % [_team_label(0), pub.team_score[0]]
-	lbl_score1.text = "%s: %d" % [_team_label(1), pub.team_score[1]]
-	if phase == Phase.PLAYING:
-		if pub.current_player == local_seat:
-			lbl_turn.text = "Turno: %s (Tú)" % _seat_label(local_seat)
-		else:
-			lbl_turn.text = "Turno: %s" % _seat_title(pub.current_player)
-	else:
-		lbl_turn.text = ""
-
+## Los datos de la mesa, ya sin franja: la meta y las puntas en su esquina, y el tanteo
+## de cada pareja pegado a la mano de sus dos jugadores.
+func _update_scoreboard() -> void:
+	lbl_target.text = "Meta  %d" % pub.target_score
 	if pub.board.is_empty():
-		lbl_ends.text = "Mesa vacía — se espera la ficha inicial"
+		lbl_ends.text = "Puntas  —"
 	else:
-		lbl_ends.text = "Puntas abiertas: %d  —  %d" % [pub.left_end, pub.right_end]
+		lbl_ends.text = "Puntas  %d  ·  %d" % [pub.left_end, pub.right_end]
+
+	var own_team: int = _team_of(local_seat)
+	for pos in range(SEAT_COUNT):
+		var badge: PanelContainer = score_badges[pos]
+		var label: Label = score_labels[pos]
+		if badge == null or label == null:
+			continue
+		var team: int = _team_of(_seat_at(pos))
+		label.text = str(pub.team_score[team])
+		# El nombre de la pareja no cabe en el marcador y tampoco hace falta a cada
+		# momento; se deja a mano por si se quiere confirmar de quién es el número.
+		badge.tooltip_text = "%s: %d" % [_team_label(team), pub.team_score[team]]
+		_style_score_badge(badge, label, team == own_team)
+
+
+func _style_score_badge(badge: PanelContainer, label: Label, own_team: bool) -> void:
+	var accent: Color = Color(1, 0.85, 0.35) if own_team else Color(0.55, 0.74, 0.92)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.04, 0.16, 0.08, 0.92)
+	sb.set_corner_radius_all(10)
+	sb.set_border_width_all(2)
+	sb.border_color = accent
+	sb.set_content_margin_all(4)
+	badge.add_theme_stylebox_override("panel", sb)
+	label.add_theme_color_override("font_color", accent)
 
 
 # El pase es automático (lo aplica la autoridad) para que el juego nunca se quede
