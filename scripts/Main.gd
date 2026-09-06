@@ -62,6 +62,12 @@ const SIDE_DOT_SIZE := 16.0
 ## Con el tablero de 712 de alto, 105 entra con 30 px de sobra. 110 se pasaría por 3, que
 ## es demasiado poco margen para fiarse de una muestra de 200 manos.
 const BOARD_TILE_LENGTH := 105.0
+
+## Cuánto dura y cuánto recorre la entrada de una ficha. Corta y bien por debajo de la
+## pausa entre turnos (0.9 s en local, 0.6 s en el servidor) para que siempre termine
+## antes de que la mesa se vuelva a dibujar.
+const PLAY_ANIM_TIME := 0.28
+const PLAY_ANIM_TRAVEL := 150.0
 const BOARD_TILE_SCALE := BOARD_TILE_LENGTH / 128.0
 
 ## Hasta dónde puede llegar la hilera a cada lado antes de doblar, en unidades naturales.
@@ -155,6 +161,12 @@ var spin_pase_salida: SpinBox
 var pending_ends: Array = []
 var end_highlights: Array = []
 var end_slots: Dictionary = {}
+
+# Ficha recién jugada, para animar su llegada. El evento dice QUIÉN jugó; de qué lado
+# entró se deduce comparando la mesa con la que se dibujó la vez anterior.
+var pending_arrival: Dictionary = {}
+var last_board_count: int = 0
+var last_opening_index: int = -1
 var cancel_choice_button: Button
 var pending_hand_idx: int = -1
 
@@ -1058,6 +1070,9 @@ func _handle_event(e: Dictionary) -> void:
 	match str(e.get("type", "")):
 		"played":
 			_log("%s jugó [b]%s[/b]." % [_seat_label(e.seat), str(e.tile)])
+			# El evento llega ANTES del estado nuevo, así que cuando se dibuje la mesa ya
+			# se sabe de quién es la ficha que acaba de aparecer.
+			pending_arrival = {"seat": int(e.seat)}
 		"passed":
 			_log("%s pasa (no tiene fichas con %d ni %d)." % [_seat_label(e.seat), e.left_end, e.right_end])
 			_show_toast("%s pasó" % _seat_label(e.seat))
@@ -1398,6 +1413,10 @@ func _render_board() -> void:
 		c.queue_free()
 
 	if pub.board.is_empty() or pub.opening_tile_index < 0:
+		# Mano nueva: se olvida lo anterior para no animar una ficha que no acaba de caer.
+		pending_arrival = {}
+		last_board_count = 0
+		last_opening_index = -1
 		return
 
 	var anchor_tile: Domino = pub.board[pub.opening_tile_index]
@@ -1420,9 +1439,29 @@ func _render_board() -> void:
 	# Cada lado arranca calzando con la punta que la ficha inicial le expone: la
 	# derecha con "b" y la izquierda con "a". El lado derecho dobla hacia arriba
 	# (-Y); el izquierdo hacia abajo (+Y).
+	var right_placed: Array = _layout_chain(right_chain, chain_start_x, 1.0, -1.0, anchor_tile.b)
+	var left_placed: Array = _layout_chain(left_chain, -chain_start_x, -1.0, 1.0, anchor_tile.a)
+
 	var placements: Array = [anchor_placement]
-	placements.append_array(_layout_chain(right_chain, chain_start_x, 1.0, -1.0, anchor_tile.b))
-	placements.append_array(_layout_chain(left_chain, -chain_start_x, -1.0, 1.0, anchor_tile.a))
+	placements.append_array(right_placed)
+	placements.append_array(left_placed)
+
+	# Cuál de todas es la que acaba de caer, para animar solo esa. Se deduce comparando
+	# con la mesa anterior: si la ficha inicial se corrió un puesto en la lista es que la
+	# nueva entró por la izquierda; si no, por la derecha.
+	var arrival_index: int = -1
+	var arrival_seat: int = -1
+	if not pending_arrival.is_empty() and pub.board.size() == last_board_count + 1:
+		arrival_seat = int(pending_arrival.seat)
+		if right_placed.is_empty() and left_placed.is_empty():
+			arrival_index = 0
+		elif pub.opening_tile_index > last_opening_index:
+			arrival_index = placements.size() - 1
+		else:
+			arrival_index = right_placed.size()
+	pending_arrival = {}
+	last_board_count = pub.board.size()
+	last_opening_index = pub.opening_tile_index
 
 	# Dónde caería la SIGUIENTE ficha en cada punta: es lo que se dibuja como sombra.
 	#
@@ -1479,9 +1518,11 @@ func _render_board() -> void:
 		fit_scale = min(fit_scale, half_h / spread_y)
 
 	var anchor_screen: Vector2 = board_viewport.size / 2.0
-	for p in placements:
+	for i in range(placements.size()):
+		var p: Dictionary = placements[i]
 		var rot: float = p.get("rotation", 0.0)
-		_place_board_tile(p.domino, anchor_screen + p.offset * fit_scale, fit_scale, rot)
+		var from_seat: int = arrival_seat if i == arrival_index else -1
+		_place_board_tile(p.domino, anchor_screen + p.offset * fit_scale, fit_scale, rot, from_seat)
 
 	end_slots = {}
 	for key in slots:
@@ -1612,7 +1653,9 @@ func _dir_angle(dir: Vector2) -> float:
 	return 0.0
 
 
-func _place_board_tile(t: Domino, center: Vector2, tile_scale: float, rotation_deg: float) -> void:
+## Coloca una ficha en la mesa. Si "from_seat" es un puesto, la ficha entra deslizándose
+## desde ese lado en vez de aparecer de golpe.
+func _place_board_tile(t: Domino, center: Vector2, tile_scale: float, rotation_deg: float, from_seat: int = -1) -> void:
 	var natural: Vector2 = Vector2(64, 128) * tile_scale
 	var tex := TextureRect.new()
 	tex.texture = load(t.texture())
@@ -1623,6 +1666,38 @@ func _place_board_tile(t: Domino, center: Vector2, tile_scale: float, rotation_d
 	tex.position = center - natural / 2.0
 	tex.rotation_degrees = rotation_deg
 	board_viewport.add_child(tex)
+	if from_seat >= 0:
+		_animate_arrival(tex, from_seat)
+
+
+## La ficha recién jugada entra desde el lado de QUIEN LA JUGÓ. Además de llenar la pausa
+## entre turnos, que hasta ahora era tiempo muerto, dice quién jugó sin tener que leer el
+## registro: con tres rivales, ver de dónde viene la ficha es más rápido que buscar el
+## nombre.
+##
+## El tween se crea desde la propia ficha para que muera con ella: la mesa se vuelve a
+## dibujar entera en cada jugada, y una animación apuntando a una ficha ya liberada es un
+## error en tiempo de ejecución.
+func _animate_arrival(tex: TextureRect, from_seat: int) -> void:
+	var landing: Vector2 = tex.position
+	var offset := Vector2.ZERO
+	match _screen_pos(from_seat):
+		POS_BOTTOM:
+			offset = Vector2(0, PLAY_ANIM_TRAVEL)
+		POS_TOP:
+			offset = Vector2(0, -PLAY_ANIM_TRAVEL)
+		POS_LEFT:
+			offset = Vector2(-PLAY_ANIM_TRAVEL, 0)
+		POS_RIGHT:
+			offset = Vector2(PLAY_ANIM_TRAVEL, 0)
+
+	tex.position = landing + offset
+	tex.modulate = Color(1, 1, 1, 0)
+
+	var tween: Tween = tex.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(tex, "position", landing, PLAY_ANIM_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_property(tex, "modulate:a", 1.0, PLAY_ANIM_TIME)
 
 
 func _render_own_hand() -> void:
