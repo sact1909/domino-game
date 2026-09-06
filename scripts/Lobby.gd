@@ -20,6 +20,9 @@ const GAME_SCENE := "res://scenes/Main.tscn"
 ## instalación puede ser de solo lectura.
 const SETTINGS_PATH := "user://lobby.cfg"
 
+## El mismo lienzo fijo que la mesa: Godot lo escala a la ventana del jugador.
+const SCREEN_SIZE := Vector2(1920, 1080)
+
 ## Nombres de los puestos, en el mismo orden que en la mesa. Acá son la IDENTIDAD de la
 ## silla: los enfrentados (0-2 y 1-3) son compañeros, y por eso elegir silla es elegir
 ## pareja.
@@ -81,7 +84,7 @@ func _ready() -> void:
 	var bg := ColorRect.new()
 	bg.color = Color(0.09, 0.28, 0.16)
 	bg.position = Vector2.ZERO
-	bg.size = Vector2(1280, 900)
+	bg.size = SCREEN_SIZE
 	add_child(bg)
 
 	_build_entry()

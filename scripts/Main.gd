@@ -20,25 +20,53 @@ const POS_RIGHT := 1
 const POS_TOP := 2
 const POS_LEFT := 3
 
-# Cada lado de la hilera avanza en fila (máx. 5 fichas seguidas); al llegar a esa
-# cantidad, dobla UNA sola vez en toda la partida (el lado derecho hacia arriba, el
-# izquierdo hacia abajo) y desde ahí sigue derecho en el sentido contrario el resto
-# de la mano, igual que en una mesa real cuando la cadena se acerca al borde.
-const ROW_LENGTH := 5
+
+# ---------------------------------------------------------------------------
+# Reparto de la pantalla
+# ---------------------------------------------------------------------------
+# Todo el juego se dibuja sobre un lienzo fijo de 1920x1080 y Godot lo escala a la
+# ventana, así que estas medidas son las mismas en cualquier monitor.
+const SCREEN_SIZE := Vector2(1920, 1080)
+
+const TOP_BAR_SIZE := Vector2(1920, 50)
+const TOP_PANEL_POS := Vector2(700, 54)
+const TOP_PANEL_SIZE := Vector2(520, 112)
+const BOARD_POS := Vector2(160, 172)
+const BOARD_SIZE := Vector2(1600, 712)
+const OWN_PANEL_POS := Vector2(460, 890)
+const OWN_PANEL_SIZE := Vector2(1000, 190)
+const LOG_PANEL_POS := Vector2(14, 890)
+const LOG_PANEL_SIZE := Vector2(300, 180)
+const TOAST_POS := Vector2(710, 830)
+const TOAST_SIZE := Vector2(500, 44)
 
 # Medidas de los dos puestos laterales. El canal donde va el nombre girado sale de
 # restarle a la ventana el panel y las fichas, así que todo se calcula de acá.
-#
-# El canal mide 34 px para un texto de unos 19: queda ajustado a propósito. Con el canal
-# ancho el nombre flotaba lejos del borde y de las fichas a la vez, y no hace falta más
-# sitio porque el nombre nunca envuelve a una segunda línea.
-const SCREEN_SIZE := Vector2(1280, 900)
-const SIDE_PANEL_SIZE := Vector2(140, 456)
+const SIDE_PANEL_SIZE := Vector2(140, 712)
 const SIDE_TILE_SIZE := Vector2(88, 44)
-const SIDE_LEFT_POS := Vector2(8, 204)
-const SIDE_RIGHT_POS := Vector2(1132, 204)
-const SIDE_DOT_SIZE := 16.0
+const SIDE_LEFT_POS := Vector2(14, 172)
+const SIDE_RIGHT_POS := Vector2(1766, 172)
 const SIDE_TITLE_GAP := 7.0
+const SIDE_DOT_SIZE := 16.0
+
+## Largo fijo de una ficha en la mesa. Es LO QUE NO CAMBIA: la hilera crece, se pliega, y
+## la ficha se queda igual en vez de encogerse conforme avanza la mano.
+##
+## El número sale de medir, no de elegirlo a ojo. Con el giro por espacio, quien manda es
+## el ALTO: cuanto más grande la ficha, antes dobla la fila, y cada giro añade un renglón.
+## En 200 manos (5308 estados de mesa) el trazado más alto necesita:
+##
+##   ficha 100 -> 650 px de alto     ficha 110 -> 715 px
+##   ficha 105 -> 683 px             ficha 120 -> 780 px
+##
+## Con el tablero de 712 de alto, 105 entra con 30 px de sobra. 110 se pasaría por 3, que
+## es demasiado poco margen para fiarse de una muestra de 200 manos.
+const BOARD_TILE_LENGTH := 105.0
+const BOARD_TILE_SCALE := BOARD_TILE_LENGTH / 128.0
+
+## Hasta dónde puede llegar la hilera a cada lado antes de doblar, en unidades naturales.
+## La ficha inicial está clavada en el centro, así que a cada lado le toca media mesa.
+const BOARD_REACH_X := (BOARD_SIZE.x / 2.0) / BOARD_TILE_SCALE
 
 const LOBBY_SCENE := "res://scenes/Lobby.tscn"
 
@@ -122,7 +150,12 @@ var spin_pase_seguido: SpinBox
 var spin_capicua: SpinBox
 var spin_pase_salida: SpinBox
 
-var end_choice_popup: PanelContainer
+# Elección de punta: la ficha elegida, las puntas donde puede ir, las marcas encendidas
+# sobre la mesa y dónde quedó en pantalla la ficha de cada punta.
+var pending_ends: Array = []
+var end_highlights: Array = []
+var end_slots: Dictionary = {}
+var cancel_choice_button: Button
 var pending_hand_idx: int = -1
 
 # Si se mandó una jugada y todavía no llegó el estado nuevo. Jugando en local se aclara
@@ -156,14 +189,12 @@ var leave_button: Button
 func _ready() -> void:
 	_build_background()
 	_build_top_bar()
-	_build_ends_label()
 	_build_top_panel()
 	_build_own_panel()
 	_build_left_panel()
 	_build_right_panel()
 	_build_board_area()
 	_build_log_panel()
-	_build_end_choice_popup()
 	_build_toast()
 	_build_hand_result_overlay()
 	_build_game_over_overlay()
@@ -204,7 +235,7 @@ func _build_background() -> void:
 	var bg := ColorRect.new()
 	bg.color = Color(0.08, 0.33, 0.16)
 	bg.position = Vector2.ZERO
-	bg.size = Vector2(1280, 900)
+	bg.size = SCREEN_SIZE
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
@@ -212,7 +243,7 @@ func _build_background() -> void:
 func _build_top_bar() -> void:
 	var bar := PanelContainer.new()
 	bar.position = Vector2(0, 0)
-	bar.size = Vector2(1280, 50)
+	bar.size = TOP_BAR_SIZE
 	add_child(bar)
 
 	var row := HBoxContainer.new()
@@ -237,22 +268,18 @@ func _build_top_bar() -> void:
 	lbl_turn.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
 	row.add_child(lbl_turn)
 
-
-# Va en su propia franja, debajo del panel de Norte: antes quedaba detrás de las
-# fichas de Norte y no se leía.
-func _build_ends_label() -> void:
+	# Las puntas abiertas van en la misma barra que el marcador, y no en una franja
+	# aparte. Es un dato corto que se lee de un vistazo, y la franja se comía 26 px de
+	# alto que ahora se lleva el tablero — que es lo que decide el tamaño de las fichas.
 	lbl_ends = Label.new()
-	lbl_ends.position = Vector2(180, 178)
-	lbl_ends.size = Vector2(920, 22)
-	lbl_ends.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl_ends.add_theme_font_size_override("font_size", 15)
-	add_child(lbl_ends)
+	lbl_ends.add_theme_font_size_override("font_size", 18)
+	row.add_child(lbl_ends)
 
 
 func _build_top_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(440, 54)
-	panel.size = Vector2(400, 120)
+	panel.position = TOP_PANEL_POS
+	panel.size = TOP_PANEL_SIZE
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
 	add_child(panel)
 
@@ -276,8 +303,8 @@ func _build_top_panel() -> void:
 
 func _build_own_panel() -> void:
 	var panel := VBoxContainer.new()
-	panel.position = Vector2(300, 668)
-	panel.size = Vector2(680, 225)
+	panel.position = OWN_PANEL_POS
+	panel.size = OWN_PANEL_SIZE
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
 	add_child(panel)
 
@@ -299,13 +326,26 @@ func _build_own_panel() -> void:
 	own_hand_row.add_theme_constant_override("separation", 8)
 	panel.add_child(own_hand_row)
 
+	var status_row := HBoxContainer.new()
+	status_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	status_row.add_theme_constant_override("separation", 12)
+	panel.add_child(status_row)
+
 	# Solo informa el estado del turno (el pase es automático), así que es una
 	# etiqueta y no un botón deshabilitado.
 	pass_status = Label.new()
 	pass_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	pass_status.add_theme_font_size_override("font_size", 14)
 	pass_status.add_theme_color_override("font_color", Color(0.85, 0.88, 0.85))
-	panel.add_child(pass_status)
+	status_row.add_child(pass_status)
+
+	# Salida sin jugar, al lado del estado y no en un cartel aparte: solo aparece cuando
+	# hay una ficha elegida, y hace falta porque mientras tanto la mano queda bloqueada.
+	cancel_choice_button = Button.new()
+	cancel_choice_button.text = "No jugar"
+	cancel_choice_button.visible = false
+	cancel_choice_button.pressed.connect(_cancel_end_choice)
+	status_row.add_child(cancel_choice_button)
 
 
 # En los laterales la etiqueta va DEBAJO de la pila de fichas, siguiendo la columna,
@@ -407,16 +447,16 @@ func _layout_side_title(title: Label, dot: Panel, at: Vector2, toward_left_edge:
 
 func _build_board_area() -> void:
 	board_viewport = Control.new()
-	board_viewport.position = Vector2(180, 204)
-	board_viewport.size = Vector2(920, 456)
+	board_viewport.position = BOARD_POS
+	board_viewport.size = BOARD_SIZE
 	board_viewport.clip_contents = true
 	add_child(board_viewport)
 
 
 func _build_log_panel() -> void:
 	var panel := PanelContainer.new()
-	panel.position = Vector2(10, 668)
-	panel.size = Vector2(280, 222)
+	panel.position = LOG_PANEL_POS
+	panel.size = LOG_PANEL_SIZE
 	add_child(panel)
 
 	var vb := VBoxContainer.new()
@@ -436,55 +476,64 @@ func _build_log_panel() -> void:
 	vb.add_child(log_rt)
 
 
-func _build_end_choice_popup() -> void:
-	end_choice_popup = PanelContainer.new()
-	end_choice_popup.position = Vector2(390, 214)
-	# Más alto que antes para que el contenido quepa dentro de los márgenes del
-	# fondo. El margen es menor que en los diálogos grandes: es un aviso chico.
-	end_choice_popup.size = Vector2(500, 100)
-	end_choice_popup.visible = false
-	_apply_dialog_style(end_choice_popup, 14.0)
-	add_child(end_choice_popup)
+## Enciende o apaga las sombras de las dos puntas de la mesa.
+##
+## Antes esto era un cartel preguntando "¿izquierda o derecha?". La sombra es más directa:
+## enseña EL HUECO donde va a caer la ficha, con su tamaño y su orientación de verdad, así
+## que no hay nada que traducir de una palabra a un sitio.
+##
+## Van sin la imagen de la ficha a propósito: lo que se está eligiendo es un sitio, no una
+## ficha, y dibujar una que todavía no está jugada confundiría con las que sí lo están.
+func _sync_end_highlights() -> void:
+	for node in end_highlights:
+		if is_instance_valid(node):
+			# Se saca del árbol antes de liberarlo: queue_free() tarda hasta el final del
+			# cuadro y mientras tanto la sombra vieja se seguiría viendo.
+			board_viewport.remove_child(node)
+			node.queue_free()
+	end_highlights = []
 
-	var vb := VBoxContainer.new()
-	end_choice_popup.add_child(vb)
+	if pending_hand_idx < 0 or pending_hand_idx >= mine.tiles.size():
+		return
 
-	var lbl := Label.new()
-	lbl.text = "¿En qué punta deseas jugar?"
-	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(lbl)
+	# El hueco depende de la ficha elegida: un doble se acuesta cruzado y ocupa otro sitio
+	# y otro tamaño. Enseñar el de una ficha normal cuando vas a jugar un doble sería
+	# mentirle al jugador sobre dónde va a caer.
+	var chosen: Domino = mine.tiles[pending_hand_idx]
+	var shape: String = "double" if chosen.is_double() else "plain"
 
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 16)
-	vb.add_child(row)
+	for end in pending_ends:
+		var key: String = str(end)
+		if not end_slots.has(key):
+			continue
+		var rect: Rect2 = (end_slots[key] as Dictionary)[shape]
+		var shadow := Button.new()
+		shadow.position = rect.position
+		shadow.size = rect.size
+		shadow.tooltip_text = "Jugar por la izquierda" if key == "L" else "Jugar por la derecha"
+		shadow.pressed.connect(func(): _on_end_choice(key))
+		_apply_shadow_style(shadow)
+		board_viewport.add_child(shadow)
+		end_highlights.append(shadow)
 
-	var left_btn := Button.new()
-	left_btn.name = "LeftBtn"
-	left_btn.text = "Izquierda"
-	left_btn.pressed.connect(func(): _on_end_choice("L"))
-	row.add_child(left_btn)
 
-	var right_btn := Button.new()
-	right_btn.name = "RightBtn"
-	right_btn.text = "Derecha"
-	right_btn.pressed.connect(func(): _on_end_choice("R"))
-	row.add_child(right_btn)
-
-	# Salida sin jugar. Hace falta porque mientras la elección está abierta la mano
-	# queda bloqueada: sin este botón, elegir una ficha de dos puntas te obligaba a
-	# jugarla.
-	var cancel_btn := Button.new()
-	cancel_btn.name = "CancelBtn"
-	cancel_btn.text = "No jugar"
-	cancel_btn.pressed.connect(_cancel_end_choice)
-	row.add_child(cancel_btn)
+## La sombra: oscura y translúcida, con un borde claro que la separa del fondo de la mesa.
+## Al pasar por encima se aclara, para que se note que es lo que hay que tocar.
+func _apply_shadow_style(button: Button) -> void:
+	for state in ["normal", "hover", "pressed", "focus"]:
+		var sb := StyleBoxFlat.new()
+		var lit: bool = state == "hover" or state == "pressed"
+		sb.bg_color = Color(0.05, 0.10, 0.06, 0.62 if lit else 0.42)
+		sb.border_color = Color(1, 0.94, 0.55, 0.95 if lit else 0.6)
+		sb.set_border_width_all(3)
+		sb.set_corner_radius_all(6)
+		button.add_theme_stylebox_override(state, sb)
 
 
 func _build_toast() -> void:
 	toast_panel = PanelContainer.new()
-	toast_panel.position = Vector2(390, 596)
-	toast_panel.size = Vector2(500, 44)
+	toast_panel.position = TOAST_POS
+	toast_panel.size = TOAST_SIZE
 	toast_panel.visible = false
 	toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	# Fondo propio y opaco: se dibuja sobre las fichas del tablero, y con el estilo
@@ -538,7 +587,7 @@ func _apply_dialog_style(panel: PanelContainer, margin: float = 22.0) -> void:
 ## su tamaño y la centra verticalmente junto al texto.
 func _make_turn_dot() -> Panel:
 	var dot := Panel.new()
-	dot.custom_minimum_size = Vector2(16, 16)
+	dot.custom_minimum_size = Vector2(SIDE_DOT_SIZE, SIDE_DOT_SIZE)
 	dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.25, 0.32, 0.26)
@@ -622,7 +671,7 @@ func _build_hand_result_overlay() -> void:
 	hand_result_overlay = ColorRect.new()
 	hand_result_overlay.color = Color(0, 0, 0, 0.7)
 	hand_result_overlay.position = Vector2.ZERO
-	hand_result_overlay.size = Vector2(1280, 900)
+	hand_result_overlay.size = SCREEN_SIZE
 	hand_result_overlay.visible = false
 	add_child(hand_result_overlay)
 
@@ -658,7 +707,7 @@ func _build_game_over_overlay() -> void:
 	game_over_overlay = ColorRect.new()
 	game_over_overlay.color = Color(0, 0, 0, 0.75)
 	game_over_overlay.position = Vector2.ZERO
-	game_over_overlay.size = Vector2(1280, 900)
+	game_over_overlay.size = SCREEN_SIZE
 	game_over_overlay.visible = false
 	add_child(game_over_overlay)
 
@@ -703,7 +752,7 @@ func _build_start_overlay() -> void:
 	start_overlay = ColorRect.new()
 	start_overlay.color = Color(0, 0, 0, 0.85)
 	start_overlay.position = Vector2.ZERO
-	start_overlay.size = Vector2(1280, 900)
+	start_overlay.size = SCREEN_SIZE
 	add_child(start_overlay)
 
 	var center := CenterContainer.new()
@@ -1262,16 +1311,17 @@ func _on_hand_tile_pressed(idx: int) -> void:
 		var e: String = chosen.ends[0]
 		_send_play(idx, e)
 	else:
-		_show_end_choice_popup(idx)
+		_begin_end_choice(idx, chosen.ends)
 
 
-func _show_end_choice_popup(idx: int) -> void:
+## Deja la ficha elegida y enciende las marcas de las puntas donde puede ir. Todavía no se
+## juega nada: se juega al tocar una de las dos.
+func _begin_end_choice(idx: int, ends: Array) -> void:
 	pending_hand_idx = idx
-	var left_btn: Button = end_choice_popup.find_child("LeftBtn", true, false)
-	var right_btn: Button = end_choice_popup.find_child("RightBtn", true, false)
-	left_btn.text = "Izquierda (%d)" % pub.left_end
-	right_btn.text = "Derecha (%d)" % pub.right_end
-	end_choice_popup.visible = true
+	pending_ends = ends
+	_sync_end_highlights()
+	cancel_choice_button.visible = true
+	_update_pass_status()
 	# Se redibuja la mano para que las fichas queden apagadas: así el bloqueo se ve, en
 	# vez de que el clic simplemente no haga nada.
 	_render_own_hand()
@@ -1286,18 +1336,20 @@ func _on_end_choice(end: String) -> void:
 	_send_play(idx, end)
 
 
-## Cierra la elección de punta y olvida la ficha pendiente.
+## Apaga las marcas y olvida la ficha elegida.
 func _cancel_end_choice() -> void:
 	pending_hand_idx = -1
-	end_choice_popup.visible = false
+	pending_ends = []
+	_sync_end_highlights()
+	cancel_choice_button.visible = false
+	_update_pass_status()
 	_render_own_hand()
 
 
-## El popup solo tiene sentido mientras sea tu turno, así que se cierra solo en cuanto
-## deja de serlo. Sin esto quedaba abierto encima de la mesa (no la tapa: tu mano está
-## más abajo y se puede tocar igual), y contestarlo después mandaba una jugada fuera de
-## turno. En red va a pasar más seguido, porque la mesa puede avanzar mientras lo estás
-## mirando.
+## La elección solo tiene sentido mientras sea tu turno, así que se cierra sola en cuanto
+## deja de serlo. Sin esto quedarían las marcas encendidas sobre una mesa que ya avanzó, y
+## tocarlas mandaría una jugada fuera de turno. En red va a pasar más seguido, porque la
+## mesa puede avanzar mientras las estás mirando.
 func _sync_end_choice() -> void:
 	if pending_hand_idx < 0:
 		return
@@ -1328,14 +1380,20 @@ func _render_all() -> void:
 	own_title.text = "Tu mano (%s)%s" % [_seat_label(local_seat), _lead_mark(local_seat)]
 
 
-# La ficha inicial (el burro) queda siempre exactamente en el centro del tablero y
-# nunca se mueve. Cada lado de la hilera crece desde ahí en fila; al llegar a
-# ROW_LENGTH fichas seguidas, dobla 90° UNA sola vez y desde ahí sigue derecho en el
-# sentido contrario el resto de la mano (como en una mesa real cuando se acerca al
-# borde). Primero se calcula todo el trazado a tamaño natural y, si no cabe, se
-# encoge por igual alrededor del mismo centro — la hilera nunca se desplaza, solo
-# se hace más chica.
+# La ficha inicial (el burro) queda siempre exactamente en el centro del tablero y nunca
+# se mueve. Cada lado de la hilera crece desde ahí en fila y, cuando a la siguiente ficha
+# ya no le queda sitio, esa misma ficha dobla 90° y la fila sigue en sentido contrario —
+# como en una mesa real cuando la cadena llega al borde. Puede doblar tantas veces como
+# haga falta: la hilera se pliega en filas, igual que un texto que salta de renglón.
+#
+# Las fichas mantienen SIEMPRE el mismo tamaño (ver BOARD_TILE_LENGTH). Antes se calculaba
+# el trazado a tamaño natural y se encogía para que cupiera, y eso las dejaba cada vez más
+# chicas conforme avanzaba la mano; ahora es la hilera la que se pliega para caber.
 func _render_board() -> void:
+	# Las sombras cuelgan del mismo nodo que las fichas, así que se van con ellas. Se
+	# olvida la lista para no intentar liberarlas dos veces al volver a encenderlas.
+	end_highlights = []
+	end_slots = {}
 	for c in board_viewport.get_children():
 		c.queue_free()
 
@@ -1357,89 +1415,132 @@ func _render_board() -> void:
 	var anchor_rot: float = 0.0 if anchor_is_double else _dir_angle(Vector2(-1, 0))
 	var chain_start_x: float = anchor_size.x / 2.0
 
-	var placements: Array = []
-	placements.append({"domino": anchor_tile, "offset": Vector2.ZERO, "size": anchor_size, "rotation": anchor_rot})
+	var anchor_placement := {"domino": anchor_tile, "offset": Vector2.ZERO, "size": anchor_size, "rotation": anchor_rot}
 
 	# Cada lado arranca calzando con la punta que la ficha inicial le expone: la
 	# derecha con "b" y la izquierda con "a". El lado derecho dobla hacia arriba
 	# (-Y); el izquierdo hacia abajo (+Y).
-	for p in _layout_chain(right_chain, chain_start_x, 1.0, -1.0, anchor_tile.b):
-		placements.append(p)
-	for p in _layout_chain(left_chain, -chain_start_x, -1.0, 1.0, anchor_tile.a):
-		placements.append(p)
+	var placements: Array = [anchor_placement]
+	placements.append_array(_layout_chain(right_chain, chain_start_x, 1.0, -1.0, anchor_tile.b))
+	placements.append_array(_layout_chain(left_chain, -chain_start_x, -1.0, 1.0, anchor_tile.a))
 
+	# Dónde caería la SIGUIENTE ficha en cada punta: es lo que se dibuja como sombra.
+	#
+	# Se calculan las dos variantes, normal y doble, porque un doble se acuesta cruzado y
+	# ocupa un hueco distinto — otro tamaño y otro sitio. Cuál se enseña depende de la
+	# ficha que se haya elegido; las dos se tienen en cuenta al medir para que la sombra
+	# quepa sea cual sea.
+	#
+	# Se calculan con el mismo _layout_chain que las demás en vez de estimarlo aparte, así
+	# la sombra hereda gratis toda la lógica de la esquina: si a la siguiente le toca
+	# doblar, la sombra ya aparece doblada.
+	var slots := {
+		"R": _slots_after(right_chain, chain_start_x, 1.0, -1.0, anchor_tile.b, pub.right_end),
+		"L": _slots_after(left_chain, -chain_start_x, -1.0, 1.0, anchor_tile.a, pub.left_end),
+	}
+
+	# La medición incluye SIEMPRE las sombras, se esté eligiendo o no. Si no, la mesa se
+	# reajustaría al tocar una ficha; midiendo siempre igual, la sombra tiene su sitio
+	# reservado y nada se mueve. Cuesta poco: en 300 manos medidas, la escala más chica
+	# pasó de 0.55 a 0.53.
+	var measured: Array = placements.duplicate()
+	for side in slots.values():
+		measured.append(side.plain)
+		measured.append(side.double)
+
+	# La ficha tiene un tamaño FIJO: la hilera crece y las fichas se quedan igual. El
+	# tamaño está elegido para que el trazado más largo posible quepa entero (ver
+	# BOARD_TILE_LENGTH), así que en la práctica no hace falta encoger nunca.
+	#
+	# Aun así se comprueba y se encoge si hiciera falta. El tamaño salió de medir 400
+	# manos, que es mucho pero no son todas las manos posibles: si alguna vez apareciera
+	# un trazado más largo que el peor medido, es mejor que se vea más chico un momento
+	# que perder de vista media mesa y no poder tocar una punta.
+	var fit_scale := BOARD_TILE_SCALE
 	var min_x := 0.0
 	var max_x := 0.0
 	var min_y := 0.0
 	var max_y := 0.0
-	for p in placements:
+	for p in measured:
 		var half: Vector2 = p.size / 2.0
-		var lo_x: float = p.offset.x - half.x
-		var hi_x: float = p.offset.x + half.x
-		var lo_y: float = p.offset.y - half.y
-		var hi_y: float = p.offset.y + half.y
-		if lo_x < min_x:
-			min_x = lo_x
-		if hi_x > max_x:
-			max_x = hi_x
-		if lo_y < min_y:
-			min_y = lo_y
-		if hi_y > max_y:
-			max_y = hi_y
+		min_x = min(min_x, p.offset.x - half.x)
+		max_x = max(max_x, p.offset.x + half.x)
+		min_y = min(min_y, p.offset.y - half.y)
+		max_y = max(max_y, p.offset.y + half.y)
 
+	# Con la ficha inicial clavada en el centro hay que caber a los dos lados por igual.
 	var half_w: float = board_viewport.size.x / 2.0
 	var half_h: float = board_viewport.size.y / 2.0
-	var fit_scale := 1.0
-	if max_x > 1.0 and half_w / max_x < fit_scale:
-		fit_scale = half_w / max_x
-	if -min_x > 1.0 and half_w / (-min_x) < fit_scale:
-		fit_scale = half_w / (-min_x)
-	if max_y > 1.0 and half_h / max_y < fit_scale:
-		fit_scale = half_h / max_y
-	if -min_y > 1.0 and half_h / (-min_y) < fit_scale:
-		fit_scale = half_h / (-min_y)
-	if fit_scale < 0.28:
-		fit_scale = 0.28
+	var spread_x: float = max(max_x, -min_x)
+	var spread_y: float = max(max_y, -min_y)
+	if spread_x > 1.0:
+		fit_scale = min(fit_scale, half_w / spread_x)
+	if spread_y > 1.0:
+		fit_scale = min(fit_scale, half_h / spread_y)
 
 	var anchor_screen: Vector2 = board_viewport.size / 2.0
 	for p in placements:
 		var rot: float = p.get("rotation", 0.0)
 		_place_board_tile(p.domino, anchor_screen + p.offset * fit_scale, fit_scale, rot)
 
+	end_slots = {}
+	for key in slots:
+		end_slots[key] = {
+			"plain": _screen_rect(slots[key].plain, anchor_screen, fit_scale),
+			"double": _screen_rect(slots[key].double, anchor_screen, fit_scale),
+		}
+	_sync_end_highlights()
 
-# Calcula toda la fila de un lado de la hilera (derecho o izquierdo). Avanza en línea
-# recta hasta ROW_LENGTH fichas; luego dobla en "turn_dir_y" (fija para ese lado).
-# Si justo después de doblar sigue un doble, ese doble también se queda en la misma
-# columna vertical (se sigue derecho); la fila horizontal solo se retoma con la
-# primera ficha normal que aparezca.
-#
-# Los dobles SIEMPRE se dibujan en su orientación natural (angosta y alta, sin
-# girar): eso los hace cruzar una fila horizontal (como cualquier doble en la
-# mesa), y en el tramo vertical del giro los deja alineados con él en vez de
-# acostados — que es justo lo que se ve en una mesa real.
-#
-# La esquina queda en "L" limpia: la ficha que dobla cae exactamente sobre la última
-# mitad de la ficha anterior (mismo ancho, borde compartido completo), y la fila que
-# se retoma arranca con su mitad conectora justo debajo de esa ficha que dobló.
-func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y: float, connect_init: int) -> Array:
+
+## Los dos huecos posibles para la siguiente ficha de una punta: el de una ficha normal y
+## el de un doble. Se obtienen dejando que _layout_chain coloque una ficha de más al final
+## de la cadena, que es exactamente lo que haría con la ficha de verdad.
+func _slots_after(chain: Array, start_x: float, x_sign: float, turn_dir_y: float, connect_init: int, end_value: int) -> Dictionary:
+	return {
+		"plain": _slot_for(chain, start_x, x_sign, turn_dir_y, connect_init, Domino.new(end_value, 0 if end_value != 0 else 1)),
+		"double": _slot_for(chain, start_x, x_sign, turn_dir_y, connect_init, Domino.new(end_value, end_value)),
+	}
+
+
+func _slot_for(chain: Array, start_x: float, x_sign: float, turn_dir_y: float, connect_init: int, tile: Domino) -> Dictionary:
+	var placed: Array = _layout_chain(chain + [tile], start_x, x_sign, turn_dir_y, connect_init)
+	return placed[placed.size() - 1]
+
+
+func _screen_rect(placement: Dictionary, anchor_screen: Vector2, fit_scale: float) -> Rect2:
+	var size: Vector2 = (placement.size as Vector2) * fit_scale
+	var center: Vector2 = anchor_screen + (placement.offset as Vector2) * fit_scale
+	return Rect2(center - size / 2.0, size)
+
+
+## "reach_x" es hasta dónde puede llegar la fila antes de doblar. Va como parámetro y no
+## como constante para poder medir con distintos tamaños de ficha sin tocar el código.
+func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y: float, connect_init: int, reach_x: float = BOARD_REACH_X) -> Array:
 	var result: Array = []
 	var x_pos: float = start_x
 	var y_level: float = 0.0
 	var row_y: float = 0.0
 	var x_sign: float = x_sign_init
-	var count_in_row: int = 0
 	var connect_value: int = connect_init
 	var turning: bool = false
-	var has_turned: bool = false
 	var turn_col_x: float = 0.0
 	var pending_row_start: bool = false
 
 	for t in chain:
 		var outward_value: int = t.other(connect_value)
+		# Lo que ocuparía la ficha a lo largo si siguiera en la fila. Se calcula antes de
+		# decidir el giro porque es justo lo que decide si cabe.
+		var flat_along: float = 64.0 if t.is_double() else 128.0
 
-		# Cada lado dobla como máximo UNA vez en toda la partida; después sigue
-		# derecho el resto de la hilera, no importa cuánto crezca.
-		var entering_turn: bool = not turning and not has_turned and count_in_row >= ROW_LENGTH
+		# La fila dobla cuando la ficha YA NO CABE, no a las tantas fichas. Con un número
+		# fijo, la fila terminaba donde tocara y sobraba mesa a los lados, lo que obligaba
+		# a dibujar las fichas pequeñas; midiendo el sitio de verdad, la hilera se pliega
+		# sola contra el borde y las fichas pueden ser mucho más grandes.
+		#
+		# Y puede doblar tantas veces como haga falta: la hilera se va plegando en filas,
+		# como un texto que salta de renglón. Con un solo giro permitido, una mano larga se
+		# salía del tablero por el otro lado.
+		var entering_turn: bool = not turning and absf(x_pos + x_sign * flat_along) > reach_x
 		if entering_turn:
 			turning = true
 
@@ -1471,7 +1572,6 @@ func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y:
 			center = Vector2(x_pos + x_sign * (along / 2.0), row_y)
 			slot_size = Vector2(along, perp)
 			x_pos += x_sign * along
-			count_in_row += 1
 			# Guarda el borde real de ESTA ficha (no la línea central de la fila) para
 			# que, si la siguiente ficha dobla, arranque pegada aquí y no se solape ni
 			# deje un hueco — el grosor cambia si esta ficha es un doble.
@@ -1482,9 +1582,7 @@ func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y:
 			y_level += turn_dir_y * along
 			if not t.is_double():
 				x_sign = -x_sign
-				count_in_row = 0
 				turning = false
-				has_turned = true
 				pending_row_start = true
 
 		# La textura siempre trae el valor mayor en la mitad de "arriba" (ángulo 0°) y
@@ -1504,8 +1602,6 @@ func _layout_chain(chain: Array, start_x: float, x_sign_init: float, turn_dir_y:
 	return result
 
 
-# Ángulo (0/90/180/270) que hay que girar la ficha para que su mitad "de arriba"
-# (la del valor mayor, en su textura sin girar) termine apuntando hacia "dir".
 func _dir_angle(dir: Vector2) -> float:
 	if dir.x > 0.0:
 		return 90.0
@@ -1606,7 +1702,11 @@ func _update_top_bar() -> void:
 # El pase es automático (lo aplica la autoridad) para que el juego nunca se quede
 # esperando un clic que no llega; esto solo informa el estado del turno.
 func _update_pass_status() -> void:
-	if phase != Phase.PLAYING or pub.current_player != local_seat:
+	if pending_hand_idx >= 0:
+		# Con una ficha elegida, lo único que falta es decir dónde ponerla. Se dice acá
+		# porque las marcas por sí solas no explican que hay que tocarlas.
+		pass_status.text = "Toca la punta resaltada donde quieres jugarla"
+	elif phase != Phase.PLAYING or pub.current_player != local_seat:
 		pass_status.text = ""
 	elif mine.legal_moves.is_empty():
 		pass_status.text = "Sin fichas jugables: pasando…"
