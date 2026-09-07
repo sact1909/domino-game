@@ -172,23 +172,20 @@ func _build_entry() -> void:
 	if not WsClientTransport.baked_url().is_empty():
 		url_field.get_parent().visible = false
 
-	var create_btn := Button.new()
-	create_btn.text = "Crear una sala nueva"
-	create_btn.custom_minimum_size = Vector2(260, 40)
+	var create_btn := Ui.primary_button("Crear una sala nueva", Ui.PLAY)
+	create_btn.custom_minimum_size = Vector2(300, 48)
 	create_btn.pressed.connect(_on_create_pressed)
 	vb.add_child(_centered(create_btn))
 	entry_buttons.append(create_btn)
 
-	var sep := HSeparator.new()
-	vb.add_child(sep)
+	vb.add_child(Ui.rule(520.0))
 
 	code_field = _field(vb, "Código de la sala", "")
 	code_field.placeholder_text = "%d letras" % RoomCode.LENGTH
 	code_field.max_length = 12
 
-	var join_btn := Button.new()
-	join_btn.text = "Entrar con el código"
-	join_btn.custom_minimum_size = Vector2(260, 40)
+	var join_btn := Ui.primary_button("Entrar con el código", Ui.PLAY)
+	join_btn.custom_minimum_size = Vector2(300, 48)
 	join_btn.pressed.connect(_on_join_pressed)
 	vb.add_child(_centered(join_btn))
 	entry_buttons.append(join_btn)
@@ -202,9 +199,8 @@ func _build_entry() -> void:
 
 	_load_settings()
 
-	var back_btn := Button.new()
-	back_btn.text = "Volver a jugar contra la máquina"
-	back_btn.custom_minimum_size = Vector2(260, 32)
+	var back_btn := Ui.secondary_button("Volver a jugar contra la máquina", Ui.PLAY)
+	back_btn.custom_minimum_size = Vector2(300, 44)
 	back_btn.pressed.connect(_on_back_pressed)
 	vb.add_child(_centered(back_btn))
 	entry_buttons.append(back_btn)
@@ -249,9 +245,15 @@ func _build_room() -> void:
 	# Con una sola persona repartiendo no hay carrera ni rechazos que explicar.
 	seat_rows = []
 	for i in range(SEAT_ORDER.size()):
+		# Una silla es una caja hundida, no un botón con relieve: es una lista de quién
+		# está sentado dónde, y solo el anfitrión la puede tocar.
 		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(520, 40)
+		btn.custom_minimum_size = Vector2(520, 44)
 		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.add_theme_font_size_override("font_size", 15)
+		btn.add_theme_color_override("font_color", Ui.TEXT_BODY)
+		btn.add_theme_color_override("font_hover_color", Ui.TEXT)
+		Ui.style_seat_row(btn, false)
 		btn.pressed.connect(_on_seat_pressed.bind(int(SEAT_ORDER[i])))
 		vb.add_child(btn)
 		seat_rows.append(btn)
@@ -273,9 +275,8 @@ func _build_room() -> void:
 	spin_capicua = _spin(host_box, "Valor de la Capicúa", int(defaults.bonus_capicua), 0, 500)
 	spin_pase_salida = _spin(host_box, "Valor del Pase de Salida", int(defaults.bonus_pase_salida), 0, 500)
 
-	start_button = Button.new()
-	start_button.text = "Comenzar partida"
-	start_button.custom_minimum_size = Vector2(260, 42)
+	start_button = Ui.primary_button("Comenzar partida", Ui.PLAY)
+	start_button.custom_minimum_size = Vector2(300, 48)
 	start_button.pressed.connect(_on_start_pressed)
 	host_box.add_child(_centered(start_button))
 
@@ -286,9 +287,8 @@ func _build_room() -> void:
 	room_status.add_theme_color_override("font_color", Color(1, 0.85, 0.5))
 	vb.add_child(room_status)
 
-	var leave_btn := Button.new()
-	leave_btn.text = "Salir de la sala"
-	leave_btn.custom_minimum_size = Vector2(260, 32)
+	var leave_btn := Ui.secondary_button("Salir de la sala", Ui.PEOPLE)
+	leave_btn.custom_minimum_size = Vector2(300, 44)
 	leave_btn.pressed.connect(_on_leave_pressed)
 	vb.add_child(_centered(leave_btn))
 
@@ -528,6 +528,9 @@ func _refresh_seat_rows() -> void:
 		var btn: Button = seat_rows[i]
 		btn.text = _seat_text(seat)
 		btn.disabled = not can_organize
+		# La silla elegida se resalta con el mismo verde que la meta elegida en el menú:
+		# el flecha de texto solo no se ve, y son la misma idea —"esto es lo que marcaste".
+		Ui.style_seat_row(btn, seat == _picked_seat)
 
 
 ## Una silla: de qué lado es, quién está en ella y las marcas que le corresponden.
@@ -606,12 +609,10 @@ func _set_entry_enabled(enabled: bool) -> void:
 		(b as Button).disabled = not enabled
 
 
+## Los tres andamios de esta pantalla delegan en Ui. Antes tenían sus propios tamaños y
+## colores, y por eso el lobby y la mesa se veían distintos.
 func _title(text: String) -> Label:
-	var lbl := Label.new()
-	lbl.text = text
-	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.add_theme_font_size_override("font_size", 30)
-	return lbl
+	return Ui.title(text)
 
 
 func _centered(node: Control) -> CenterContainer:
@@ -620,20 +621,22 @@ func _centered(node: Control) -> CenterContainer:
 	return box
 
 
+## Una fila de "etiqueta a la izquierda, campo a la derecha". El campo se estira con el
+## cartel para que los de todas las filas terminen alineados.
 func _field(parent: VBoxContainer, label_text: String, initial: String) -> LineEdit:
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 10)
+	row.add_theme_constant_override("separation", 12)
 	parent.add_child(row)
 
-	var lbl := Label.new()
-	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(180, 0)
+	var lbl := Ui.body(label_text)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	lbl.custom_minimum_size = Vector2(170, 0)
 	row.add_child(lbl)
 
 	var field := LineEdit.new()
 	field.text = initial
-	field.custom_minimum_size = Vector2(320, 32)
-	row.add_child(field)
+	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(Ui.style_line_edit(field))
 	return field
 
 
@@ -664,13 +667,8 @@ func _spin(parent: VBoxContainer, label_text: String, initial: int, low: int, hi
 ## _apply_dialog_style). Antes no lo eran —fondo más claro y borde crema y más grueso— y
 ## se notaba al pasar de una pantalla a la otra: parecían dos aplicaciones distintas.
 func _style(panel: PanelContainer) -> void:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.06, 0.13, 0.09)
-	sb.border_color = Color(0.55, 0.62, 0.55)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(10)
-	sb.set_content_margin_all(22)
-	panel.add_theme_stylebox_override("panel", sb)
+	panel.add_theme_stylebox_override("panel", Ui.panel_style())
+
 
 # ===========================================================================
 # Lo que se recuerda entre sesiones

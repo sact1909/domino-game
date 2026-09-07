@@ -113,6 +113,10 @@ const BOARD_REACH_X := (BOARD_SIZE.x / 2.0) / BOARD_TILE_SCALE
 ## docs/tablero_guia.png.
 const TABLE_BACKGROUND := "res://assets/mesa_fondo.jpg"
 
+## Ancho del texto dentro de los carteles. Fija el ancho del cartel entero: los párrafos
+## envuelven a esta medida y lo demás se centra sobre ella.
+const TEXT_WIDTH := 520.0
+
 const LOBBY_SCENE := "res://scenes/Lobby.tscn"
 
 enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
@@ -773,19 +777,6 @@ func _show_toast(text: String, keep: bool = false) -> void:
 	toast_tween.tween_callback(func(): toast_panel.visible = false)
 
 
-# El estilo por defecto de PanelContainer no es opaco, así que en un diálogo se
-# transparenta el tablero y las manos de atrás y no se lee nada. Los diálogos llevan
-# fondo propio, opaco.
-func _apply_dialog_style(panel: PanelContainer, margin: float = 22.0) -> void:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.06, 0.13, 0.09)
-	sb.border_color = Color(0.55, 0.62, 0.55)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(10)
-	sb.set_content_margin_all(margin)
-	panel.add_theme_stylebox_override("panel", sb)
-
-
 ## Bolita de turno. Tiene que quedar CUADRADA para que el redondeo la haga un círculo:
 ## dentro de un HBoxContainer los hijos se estiran al alto de la fila, y con una etiqueta
 ## de dos líneas quedaba de 16x36 — una pastilla, no un círculo. SHRINK_CENTER la deja en
@@ -895,7 +886,7 @@ func _build_hand_result_overlay() -> void:
 
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = Vector2(560, 0)
-	_apply_dialog_style(panel)
+	panel.add_theme_stylebox_override("panel", Ui.panel_style())
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
@@ -908,9 +899,8 @@ func _build_hand_result_overlay() -> void:
 	hand_result_content.add_theme_constant_override("separation", 10)
 	vb.add_child(hand_result_content)
 
-	var continue_btn := Button.new()
-	continue_btn.text = "Continuar"
-	continue_btn.custom_minimum_size = Vector2(200, 42)
+	var continue_btn := Ui.primary_button("Continuar", Ui.PLAY)
+	continue_btn.custom_minimum_size = Vector2(240, 48)
 	continue_btn.pressed.connect(_on_hand_result_continue)
 	var btn_center := CenterContainer.new()
 	btn_center.add_child(continue_btn)
@@ -930,16 +920,16 @@ func _build_game_over_overlay() -> void:
 	game_over_overlay.add_child(center)
 
 	var panel := PanelContainer.new()
-	_apply_dialog_style(panel)
+	panel.add_theme_stylebox_override("panel", Ui.panel_style())
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 16)
 	panel.add_child(vb)
 
-	game_over_label = Label.new()
-	game_over_label.add_theme_font_size_override("font_size", 26)
-	game_over_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	game_over_label = Ui.title("", 26)
+	game_over_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	game_over_label.custom_minimum_size = Vector2(TEXT_WIDTH, 0)
 	vb.add_child(game_over_label)
 
 	# Dos botones en fila. Jugando en local el segundo no tiene sentido —no hay sala que
@@ -949,25 +939,26 @@ func _build_game_over_overlay() -> void:
 	row.add_theme_constant_override("separation", 16)
 	vb.add_child(row)
 
-	again_button = Button.new()
-	again_button.text = "Jugar de nuevo"
-	again_button.custom_minimum_size = Vector2(200, 40)
+	again_button = Ui.primary_button("Jugar de nuevo", Ui.PLAY)
+	again_button.custom_minimum_size = Vector2(240, 48)
 	again_button.pressed.connect(_on_play_again_pressed)
 	row.add_child(again_button)
 
-	leave_button = Button.new()
-	leave_button.custom_minimum_size = Vector2(200, 40)
+	leave_button = Ui.secondary_button("", Ui.PEOPLE)
+	leave_button.custom_minimum_size = Vector2(240, 48)
 	leave_button.visible = false
 	leave_button.pressed.connect(_on_leave_pressed)
 	row.add_child(leave_button)
 
 
+## El menú de arranque. Todo el aspecto sale de Ui: acá solo se decide qué hay y en qué
+## orden, que es lo propio de esta pantalla.
 func _build_start_overlay() -> void:
 	start_overlay = ColorRect.new()
 	# El velo era para atenuar la mesa que quedaba detrás. Ya no hay mesa detrás —solo el
-	# paño— así que se aclara: con 0.85 el fondo no se veía y la pantalla quedaba negra.
-	# El cartel no depende de esto para leerse, porque tiene su propio fondo opaco.
-	start_overlay.color = Color(0, 0, 0, 0.5)
+	# paño— así que es suave: con uno opaco el fondo no se veía y quedaba una pantalla
+	# negra. El cartel no depende de esto para leerse, porque tiene fondo propio.
+	start_overlay.color = Ui.VEIL
 	start_overlay.position = Vector2.ZERO
 	start_overlay.size = SCREEN_SIZE
 	add_child(start_overlay)
@@ -977,52 +968,36 @@ func _build_start_overlay() -> void:
 	start_overlay.add_child(center)
 
 	var panel := PanelContainer.new()
-	_apply_dialog_style(panel)
+	panel.add_theme_stylebox_override("panel", Ui.panel_style())
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 14)
-	panel.custom_minimum_size = Vector2(480, 340)
 	panel.add_child(vb)
 
-	var title := Label.new()
-	title.text = "Dominó Dominicano"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 28)
-	vb.add_child(title)
+	var header := CenterContainer.new()
+	header.add_child(Ui.tiles_header([Domino.texture_path(6, 6), Domino.texture_path(3, 5)]))
+	vb.add_child(header)
 
-	var subtitle := Label.new()
-	subtitle.text = "4 jugadores, 2 parejas (Sur-Norte contra Este-Oeste). Tú juegas en el Sur; Norte es tu compañero."
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD
-	subtitle.custom_minimum_size = Vector2(430, 0)
-	vb.add_child(subtitle)
+	vb.add_child(Ui.title("Dominó Dominicano"))
+	vb.add_child(Ui.body("4 jugadores, 2 parejas (Sur-Norte contra Este-Oeste). Tú juegas en el Sur; Norte es tu compañero.", TEXT_WIDTH))
+	vb.add_child(Ui.rule(TEXT_WIDTH))
 
-	var goal_lbl := Label.new()
-	goal_lbl.text = "Elige la meta de puntos de la mesa:"
-	goal_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(goal_lbl)
+	vb.add_child(Ui.section("Elige la meta de puntos de la mesa:", Ui.GEAR, Ui.ACCENT))
 
 	var goal_row := HBoxContainer.new()
 	goal_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	goal_row.add_theme_constant_override("separation", 10)
+	goal_row.add_theme_constant_override("separation", 14)
 	vb.add_child(goal_row)
 
 	target_option_buttons.clear()
 	for goal in [100, 150, 200]:
-		var b := Button.new()
-		b.text = str(goal)
-		b.toggle_mode = true
-		b.button_pressed = (goal == selected_target)
-		b.custom_minimum_size = Vector2(70, 36)
+		var b := Ui.choice_button(str(goal), goal == selected_target)
 		b.pressed.connect(func(): _on_goal_selected(goal))
 		goal_row.add_child(b)
 		target_option_buttons.append(b)
 
-	var bonus_lbl := Label.new()
-	bonus_lbl.text = "Valor de las bonificaciones:"
-	bonus_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(bonus_lbl)
+	vb.add_child(Ui.section("Valor de las bonificaciones:", Ui.STAR, Ui.GOLD))
 
 	# Los valores por defecto salen del protocolo y no de las reglas: es esta
 	# pantalla la que los propone, y después viajan en start_match().
@@ -1031,42 +1006,46 @@ func _build_start_overlay() -> void:
 	spin_capicua = _add_bonus_field(vb, "Valor de la Capicúa", int(defaults.bonus_capicua))
 	spin_pase_salida = _add_bonus_field(vb, "Valor del Pase de Salida", int(defaults.bonus_pase_salida))
 
-	var rules_lbl := Label.new()
-	rules_lbl.text = "Reglas: dominó doble-seis (28 fichas), 7 fichas por jugador, no existe pozo. Si tienes ficha jugable, debes jugarla: no se puede pasar voluntariamente. En la primera mano sale el 6-6 (el burro)."
-	rules_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	rules_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
-	rules_lbl.custom_minimum_size = Vector2(430, 0)
-	rules_lbl.add_theme_font_size_override("font_size", 12)
-	vb.add_child(rules_lbl)
+	var note := PanelContainer.new()
+	note.add_theme_stylebox_override("panel", Ui.note_style())
+	vb.add_child(note)
 
-	var start_btn := Button.new()
-	start_btn.text = "Comenzar partida"
-	start_btn.custom_minimum_size = Vector2(220, 44)
+	var note_row := HBoxContainer.new()
+	note_row.add_theme_constant_override("separation", 12)
+	note.add_child(note_row)
+	note_row.add_child(Ui.icon(Ui.INFO, Ui.ACCENT, 20.0))
+	var rules := Ui.muted("Reglas: dominó doble-seis (28 fichas), 7 fichas por jugador, no existe pozo.\nSi tienes ficha jugable, debes jugarla; no se puede pasar voluntariamente.\nEn la primera mano sale el 6-6 (el burro).", 0.0, 13)
+	rules.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	note_row.add_child(rules)
+
+	var actions := HBoxContainer.new()
+	actions.alignment = BoxContainer.ALIGNMENT_CENTER
+	actions.add_theme_constant_override("separation", 14)
+	vb.add_child(actions)
+
+	var start_btn := Ui.primary_button("Comenzar partida", Ui.PLAY)
+	start_btn.custom_minimum_size = Vector2(268, 48)
 	start_btn.pressed.connect(_on_start_pressed)
-	var start_center := CenterContainer.new()
-	start_center.add_child(start_btn)
-	vb.add_child(start_center)
+	actions.add_child(start_btn)
 
 	# La partida en red se arma en otra pantalla, con su propio transporte y su propio
 	# ciclo. Mezclarla acá dejaría dos autoridades vivas a la vez.
-	var online_btn := Button.new()
-	online_btn.text = "Jugar en línea con amigos"
-	online_btn.custom_minimum_size = Vector2(220, 36)
+	var online_btn := Ui.secondary_button("Jugar en línea con amigos", Ui.PEOPLE)
+	online_btn.custom_minimum_size = Vector2(268, 48)
 	online_btn.pressed.connect(_on_play_online_pressed)
-	var online_center := CenterContainer.new()
-	online_center.add_child(online_btn)
-	vb.add_child(online_center)
+	actions.add_child(online_btn)
 
 
+## Una bonificación: su nombre a la izquierda y el número a la derecha, con el número
+## pegado al borde del cartel para que los tres queden en columna.
 func _add_bonus_field(parent: VBoxContainer, label_text: String, default_value: int) -> SpinBox:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	parent.add_child(row)
 
-	var lbl := Label.new()
-	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(280, 0)
-	lbl.add_theme_font_size_override("font_size", 14)
+	var lbl := Ui.body(label_text)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
 
 	var spin := SpinBox.new()
@@ -1074,9 +1053,8 @@ func _add_bonus_field(parent: VBoxContainer, label_text: String, default_value: 
 	spin.max_value = 500
 	spin.step = 5
 	spin.value = default_value
-	spin.custom_minimum_size = Vector2(110, 0)
-	row.add_child(spin)
-
+	row.add_child(Ui.style_spin(spin))
+	return spin
 	return spin
 
 
