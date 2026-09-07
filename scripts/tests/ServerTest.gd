@@ -41,6 +41,7 @@ func run() -> void:
 	_test_turn_ownership()
 	_test_full_hand()
 	_test_ai_seats()
+	_test_disconnect_on_turn()
 	_test_host_organizes()
 	_test_play_again()
 	_test_close_room()
@@ -396,6 +397,47 @@ func _try_client_play(room: Room, peers: Array) -> bool:
 		var m: Dictionary = moves[0]
 		return room.handle_play(int(peer_id), int(m.idx), str(m.ends[0]))
 	return false
+
+
+## Se cae quien tiene el turno. La mesa NO se puede quedar clavada.
+##
+## No es lo mismo que una silla vacía desde el principio. Mientras la silla tiene a
+## alguien conectado la sala no agenda nada: le toca a esa persona y se espera su
+## mensaje. Si se cae justo entonces, el aviso de turno ya pasó y no queda nadie que
+## juegue ni nada que despierte la mano — se quedaría quieta hasta que la sala venza,
+## una hora después.
+func _test_disconnect_on_turn() -> void:
+	var room := _new_room()
+	for i in range(4):
+		room.add_member(700 + i, "J%d" % i)
+	room.start_match(700, {"target_score": 100})
+
+	# En la primera mano sale forzado el doble seis, así que a quien le toca siempre
+	# tiene jugada: no hay nada agendado y la sala está esperando por él.
+	var seat: int = int(_last_pub.current_player)
+	var dropped: int = 700 + seat
+	var board_before: int = int(_last_pub.board.size())
+	_check(not room.has_pending_turn(), "con un humano en turno no debería haber nada agendado")
+
+	room.remove_member(dropped)
+	_check(room.has_pending_turn(), "al caerse quien tenía el turno, la sala debería agendar el relevo")
+
+	# Y el relevo tiene que llegar a JUGAR. Sin esto la comprobación de arriba solo
+	# diría que quedó algo apuntado, no que la mano siga.
+	room.tick(1.0)
+	_check(int(_last_pub.board.size()) > board_before, "la IA debería jugar por la silla que se quedó sola")
+	_check(int(_last_pub.current_player) != seat, "el turno debería haber pasado a otro puesto")
+
+	# Y la mano tiene que poder terminar con los tres que quedan, sin volver a clavarse.
+	var guard: int = 0
+	while _hand_ended_peers.is_empty():
+		guard += 1
+		if guard > 500:
+			_fail("la mano no terminó después de que se cayera quien tenía el turno")
+			return
+		if not _try_client_play(room, [700, 701, 702, 703]):
+			room.tick(1.0)
+	_check(not _hand_ended_peers.has(dropped), "a quien se fue no debería llegarle el cierre")
 
 
 # ===========================================================================

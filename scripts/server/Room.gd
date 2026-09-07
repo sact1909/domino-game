@@ -111,6 +111,15 @@ func remove_member(peer_id: int) -> void:
 	if _host_seat == seat:
 		_host_seat = _lowest_occupied_seat()
 
+	# Si se fue justo quien tenía el turno, hay que volver a mirar de quién es. Mientras
+	# la silla estuvo ocupada la sala no agendó nada —le tocaba a esa persona y se
+	# esperaba su mensaje—, así que el aviso de turno ya pasó y al quedarse sola no hay
+	# nadie que juegue ni nada que despierte la mano: se quedaría quieta hasta que la
+	# sala venciera, una hora después. Volver a anunciar el turno es lo mismo que habría
+	# pasado si la silla hubiera estado vacía desde el principio, que ya funciona.
+	if phase == Phase.PLAYING and not _session.hand_over() and _session.current_seat() == seat:
+		_on_session_turn_ready(seat, _session.needs_forced_pass())
+
 	_touch()
 	broadcast_lobby()
 
