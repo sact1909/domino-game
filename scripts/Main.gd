@@ -107,6 +107,12 @@ const BOARD_TILE_SCALE := BOARD_TILE_LENGTH / 128.0
 ## La ficha inicial está clavada en el centro, así que a cada lado le toca media mesa.
 const BOARD_REACH_X := (BOARD_SIZE.x / 2.0) / BOARD_TILE_SCALE
 
+## El paño de la mesa. Va debajo de todo y no le quita sitio a nada: las zonas donde hay
+## texto directamente sobre el fondo —los nombres, la meta, las puntas— piden fondo
+## oscuro y liso, y esta imagen las respeta, que para eso se dibujó con el plano de
+## docs/tablero_guia.png.
+const TABLE_BACKGROUND := "res://assets/mesa_fondo.jpg"
+
 const LOBBY_SCENE := "res://scenes/Lobby.tscn"
 
 enum Phase { SETUP, PLAYING, HAND_OVER, GAME_OVER }
@@ -296,13 +302,31 @@ func _take_transport() -> Transport:
 	return LocalTransport.new(_resolve_local_seat())
 
 
+## El paño de la mesa: la imagen de fondo, y el verde liso debajo.
+##
+## El color no es adorno: si algún día la imagen falta o no se puede cargar, la mesa se ve
+## verde en vez de negra y todo lo que va encima se sigue leyendo. Cuesta cuatro líneas y
+## evita que un archivo perdido arruine la pantalla entera.
+##
+## La imagen se recorta antes que deformarse. La que hay mide 1376x768, que no es
+## exactamente 16:9: estirarla a 1920x1080 le metería un 1% de deformación en vertical, y
+## en un paño con retícula y adornos eso se nota antes que perder siete píxeles por lado.
 func _build_background() -> void:
-	var bg := ColorRect.new()
-	bg.color = Color(0.08, 0.33, 0.16)
-	bg.position = Vector2.ZERO
-	bg.size = SCREEN_SIZE
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(bg)
+	var felt := ColorRect.new()
+	felt.color = Color(0.08, 0.33, 0.16)
+	felt.position = Vector2.ZERO
+	felt.size = SCREEN_SIZE
+	felt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(felt)
+
+	var cloth := TextureRect.new()
+	cloth.texture = load(TABLE_BACKGROUND)
+	cloth.position = Vector2.ZERO
+	cloth.size = SCREEN_SIZE
+	cloth.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	cloth.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	cloth.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(cloth)
 
 
 ## Meta y puntas abiertas, en la esquina de arriba a la derecha.
