@@ -26,6 +26,16 @@ const MAX_ACTIONS_PER_HAND := 400
 const SESSION_MATCHES := 60
 const MAX_SESSION_STEPS := 4000
 
+## Mínimo de comprobaciones que tienen que salir de las pruebas del servidor.
+##
+## No es capricho, es una cicatriz. Un archivo del servidor perdió su "class_name" en una
+## edición; ServerTest dejó de poder instanciarse y esta suite siguió diciendo TODO BIEN
+## con CERO comprobaciones del servidor. El error estaba en la consola, entre miles de
+## líneas, y pasó desapercibido hasta que se reconstruyó el cache de clases de Godot.
+##
+## Un cero no es "todo bien": es que no se probó nada.
+const MIN_SERVER_CHECKS := 1000
+
 var _failures: Array = []
 var _hands_played := 0
 var _actions := 0
@@ -423,6 +433,12 @@ func _report() -> void:
 	print("[test] %d manos, %d acciones, %d tranques, %d capicúas" % [_hands_played, _actions, _tranques, _capicuas])
 	print("[test] sesión: %d manos, %d acciones en %d partidas" % [_session_hands, _session_actions, SESSION_MATCHES])
 	print("[test] servidor: %d comprobaciones" % _server_checks)
+
+	# Se revisa acá y no en _test_server porque, cuando ServerTest no compila, la llamada
+	# a new() falla y GDScript ABORTA esa función entera: nada de lo que venga después de
+	# esa línea llega a correr. El informe, en cambio, corre siempre.
+	if _server_checks < MIN_SERVER_CHECKS:
+		_fail("las pruebas del servidor hicieron %d comprobaciones y se esperaban al menos %d: no corrieron" % [_server_checks, MIN_SERVER_CHECKS])
 
 	if _failures.is_empty():
 		print("[test] TODO BIEN")

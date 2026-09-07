@@ -1,3 +1,4 @@
+class_name Room
 extends RefCounted
 
 ## Una sala: hasta cuatro jugadores sentados alrededor de una GameSession.
