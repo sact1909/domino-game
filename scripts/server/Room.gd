@@ -1,4 +1,3 @@
-class_name Room
 extends RefCounted
 
 ## Una sala: hasta cuatro jugadores sentados alrededor de una GameSession.
@@ -44,6 +43,17 @@ const TURN_TIMEOUT := 45.0
 ## mucho más, porque "sin actividad" muchas veces es que están conversando.
 const EMPTY_ROOM_TTL := 300.0
 const IDLE_ROOM_TTL := 3600.0
+
+## Y una sala que se queda vacía SIN haber empezado ninguna partida se recoge enseguida.
+##
+## Los cinco minutos de arriba existen por una razón concreta: que quien se cayó vuelva y
+## encuentre su mesa. En una sala donde nunca se repartió no hay nada de eso — nadie tiene
+## silla ni mano a la que volver, así que guardarla cinco minutos no le sirve a nadie y sí
+## le sirve a quien quiera ocupar el cupo del servidor sin jugar.
+##
+## Treinta segundos y no cero: si a quien acaba de crear la sala se le cae la conexión
+## justo después de repartir el código a sus amigos, tiene tiempo de volver a la misma.
+const UNPLAYED_ROOM_TTL := 30.0
 
 ## Largo máximo del nombre. Corto a propósito: entra en la mesa y no sirve para
 ## empujar el resto de la interfaz fuera de la pantalla.
@@ -91,6 +101,11 @@ var _token_rng := RandomNumberGenerator.new()
 
 ## Segundos sin actividad, para la recolección de salas.
 var _idle: float = 0.0
+
+## Si en esta sala se llegó a repartir alguna vez. Es lo que separa una mesa de verdad
+## que se quedó vacía un momento —y a la que alguien puede volver— de una sala que solo
+## ocupó sitio.
+var _ever_played: bool = false
 
 ## Quién mandó la acción que se está aplicando. Un rechazo se le contesta SOLO a esa
 ## persona: no tiene por qué aparecerle en la mesa a los demás.
@@ -338,6 +353,9 @@ func start_match(peer_id: int, config: Dictionary) -> bool:
 	_session.turn_ready.connect(_on_session_turn_ready)
 
 	phase = Phase.PLAYING
+	# Desde acá la sala ya vale la pena guardarla un rato aunque se quede vacía: hay
+	# manos repartidas y sillas con dueño, o sea gente que puede volver.
+	_ever_played = true
 	_touch()
 	broadcast_lobby()
 	_session.start_match(_config)
@@ -492,10 +510,13 @@ func seconds_left_for_turn() -> float:
 	return maxf(0.0, float(_turn_clock.left))
 
 
-## Una sala vacía se recoge pronto; una con gente adentro aguanta una hora.
+## Cuándo recoger esta sala. Son tres plazos distintos porque son tres situaciones
+## distintas: vacía sin haber jugado no le sirve a nadie, vacía después de jugar puede
+## estar esperando a que vuelva quien se cayó, y con gente adentro puede ser simplemente
+## que estén conversando.
 func should_expire() -> bool:
 	if is_empty():
-		return _idle >= EMPTY_ROOM_TTL
+		return _idle >= (EMPTY_ROOM_TTL if _ever_played else UNPLAYED_ROOM_TTL)
 	return _idle >= IDLE_ROOM_TTL
 
 

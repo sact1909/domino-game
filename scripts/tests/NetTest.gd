@@ -78,6 +78,8 @@ func _ready() -> void:
 		t.hand_ended.connect(_on_hand_ended.bind(i))
 		t.match_ended.connect(_on_match_ended.bind(i))
 		t.server_error.connect(_on_server_error.bind(i))
+		t.disconnected.connect(_on_lost.bind(i))
+		t.reconnecting.connect(_on_reconnecting.bind(i))
 		add_child(t)
 		t.begin()
 
@@ -369,6 +371,18 @@ func _on_hand_ended(closing: Dictionary, reveal: Dictionary, i: int) -> void:
 func _on_match_ended(winner_team: int, _i: int) -> void:
 	_match_over = true
 	_winner_team = winner_team
+
+
+## Se cayó el enlace de un cliente y no se pudo recuperar. Se informa en vez de dejar
+## que el guion se quede esperando: un plantón sin motivo no dice nada, y esto pasa de
+## verdad en una red mala.
+func _on_lost(i: int) -> void:
+	_fail("el cliente %d perdió la conexión con el servidor en el paso %d" % [i, _step])
+	_report()
+
+
+func _on_reconnecting(i: int) -> void:
+	print("[red] al cliente %d se le cayó el enlace y está volviendo" % i)
 
 
 func _on_server_error(reason: String, i: int) -> void:

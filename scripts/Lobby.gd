@@ -543,6 +543,14 @@ func _error_text(reason: String) -> String:
 			return "Ya estás en una sala."
 		"servidor_lleno":
 			return "El servidor no tiene lugar para más salas ahora mismo."
+		"demasiadas_salas":
+			return "Creaste varias salas seguidas. Espera un momento antes de otra."
+		"servidor_ocupado":
+			return "Se están creando muchas salas ahora mismo. Prueba en un momento."
+		"credencial_invalida":
+			return "Tu puesto en esa sala ya no está reservado."
+		"silla_ocupada":
+			return "Alguien más está en tu puesto."
 		"protocolo_incompatible":
 			return "El servidor habla otra versión del protocolo."
 		"sala_cerrada":

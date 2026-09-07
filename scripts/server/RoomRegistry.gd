@@ -7,13 +7,37 @@ extends RefCounted
 ## cuando vencen. Igual que Room, no sabe qué es un socket: lo que quiere mandar sale
 ## por "outbound".
 
-## Tope duro de salas. Sin él, cualquiera que mande create_room en bucle llena la
-## memoria del servidor: es la defensa más simple y la más necesaria en un puerto
-## abierto a internet. Limitar cuántas veces se puede pedir por minuto es lo que
-## falta, y va con el resto de la robustez.
-const MAX_ROOMS := 200
+## Tope duro de salas. No es la capacidad del servidor: medido, mil salas con partida
+## empezada ocupan 40 MB y medio milisegundo de cada cuadro, así que de capacidad va
+## sobrado. Es un FUSIBLE, y está por lo que pasa sin él: la memoria crece hasta que el
+## sistema mata el proceso, y ahí se caen todas las salas, incluidas las que tenían gente
+## jugando. Con tope, lo peor que pasa es que un rato no se puedan crear salas nuevas.
+const MAX_ROOMS := 1000
 
-## Intentos para encontrar un código libre. Con 3.2 millones de combinaciones y 200
+## Cuántas salas puede crear una MISMA conexión en un minuto.
+##
+## No para a quien quiera abusar —le basta con reconectar para tener otra cuota, porque la
+## identidad de una conexión no es la identidad de una persona— y no pretende hacerlo.
+## Está para el caso aburrido y más probable: un cliente con un error que pide sala en
+## bucle. A ese lo frena en seco y con un motivo legible.
+const CREATE_PER_PEER := 3
+
+## Y cuántas puede crear el servidor entero en un minuto, contando a todos.
+##
+## Este sí es el freno de verdad, porque no depende de saber quién pide. Sesenta por
+## minuto es un número al que cuatro amigos no se acercan ni jugando toda la noche, y a
+## quien quiera llenar el cupo lo deja en unas treinta salas a la vez: las que alcanza a
+## crear antes de que las primeras venzan a los treinta segundos. Nunca llega al tope.
+##
+## Limitar por IP sería lo natural, pero acá no sirve: detrás del proxy TLS todas las
+## conexiones llegan con la dirección del proxy, así que un límite por IP las contaría
+## como una sola y los amigos se bloquearían entre ellos.
+const CREATE_PER_SERVER := 60
+
+## La ventana de los dos límites de arriba.
+const CREATE_WINDOW := 60.0
+
+## Intentos para encontrar un código libre. Con 3.2 millones de combinaciones y mil
 ## salas como máximo, la probabilidad de fallar veinte veces seguidas es despreciable;
 ## el tope está para que un error de programación no deje el servidor girando.
 const CODE_ATTEMPTS := 20
@@ -23,6 +47,16 @@ signal outbound(peer_id: int, msg: Dictionary)
 var _rooms: Dictionary = {}
 var _room_of_peer: Dictionary = {}
 var _rng := RandomNumberGenerator.new()
+
+## Instantes en que se creó cada sala, para los dos límites por minuto: la lista de una
+## conexión y la del servidor entero.
+##
+## Los instantes salen del reloj propio del registro y no de la hora del sistema, por lo
+## mismo que el resto del servidor va por tick(delta): así una prueba adelanta un minuto
+## en una línea en vez de tener que esperarlo.
+var _creates_by_peer: Dictionary = {}
+var _creates: Array = []
+var _uptime: float = 0.0
 
 
 func _init() -> void:
@@ -40,6 +74,8 @@ func create_room(peer_id: int, player_name: String) -> String:
 		return ""
 	if _rooms.size() >= MAX_ROOMS:
 		_error(peer_id, "servidor_lleno")
+		return ""
+	if not _may_create(peer_id):
 		return ""
 
 	var code: String = _free_code()
@@ -60,6 +96,9 @@ func create_room(peer_id: int, player_name: String) -> String:
 		return ""
 
 	_room_of_peer[peer_id] = code
+	# Se apunta cuando la sala existe de verdad, no al pedirla: un intento que falló por
+	# el tope o por un código repetido no gastó nada y no debería gastar cuota.
+	_note_create(peer_id)
 	_announce_joined(peer_id, room)
 	return code
 
@@ -166,6 +205,8 @@ func room_count() -> int:
 # ===========================================================================
 ## Avanza el reloj de todas las salas y recoge las que vencieron.
 func tick(delta: float) -> void:
+	_uptime += delta
+
 	# Se recolectan los códigos primero y se borran después: modificar el diccionario
 	# mientras se recorre es pedir problemas.
 	var expired: Array = []
@@ -190,6 +231,49 @@ func _drop_room(code: String) -> void:
 	for peer_id in _room_of_peer.keys():
 		if str(_room_of_peer[peer_id]) == code:
 			_room_of_peer.erase(peer_id)
+
+
+## Si esta conexión puede crear una sala ahora. Manda el motivo si no, porque los dos
+## casos se arreglan de maneras distintas: uno esperando un rato, el otro no.
+func _may_create(peer_id: int) -> bool:
+	_forget_old_creates()
+
+	var mine: Array = _creates_by_peer.get(peer_id, [])
+	if mine.size() >= CREATE_PER_PEER:
+		_error(peer_id, "demasiadas_salas")
+		return false
+	if _creates.size() >= CREATE_PER_SERVER:
+		_error(peer_id, "servidor_ocupado")
+		return false
+	return true
+
+
+func _note_create(peer_id: int) -> void:
+	_creates.append(_uptime)
+	var mine: Array = _creates_by_peer.get(peer_id, [])
+	mine.append(_uptime)
+	_creates_by_peer[peer_id] = mine
+
+
+## Suelta lo que ya salió de la ventana. Se limpia al preguntar y no en cada cuadro:
+## así la cuenta no cuesta nada mientras nadie esté creando salas.
+func _forget_old_creates() -> void:
+	var cutoff: float = _uptime - CREATE_WINDOW
+	_creates = _after(_creates, cutoff)
+	for peer_id in _creates_by_peer.keys():
+		var mine: Array = _after(_creates_by_peer[peer_id], cutoff)
+		if mine.is_empty():
+			_creates_by_peer.erase(peer_id)
+		else:
+			_creates_by_peer[peer_id] = mine
+
+
+func _after(stamps: Array, cutoff: float) -> Array:
+	var kept: Array = []
+	for t in stamps:
+		if float(t) > cutoff:
+			kept.append(t)
+	return kept
 
 
 func _free_code() -> String:

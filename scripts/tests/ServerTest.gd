@@ -51,6 +51,7 @@ func run() -> void:
 	_test_close_room()
 	_test_registry()
 	_test_expiry()
+	_test_create_limits()
 
 
 # ===========================================================================
@@ -618,12 +619,18 @@ func _test_registry() -> void:
 	_check(reg.join_room(606, code, "Tarde").is_empty(), "no debería entrar con la partida empezada")
 	_check(_last_error_for(606) == "partida_en_curso", "el motivo debería ser partida_en_curso")
 
-	# Tope de salas: sin él, mandar create_room en bucle llena la memoria del servidor.
+	# Tope duro de salas. El límite por minuto es otro freno y no es lo que se prueba
+	# acá, así que se adelanta la ventana cada tanto para poder llegar al tope.
 	var full := _new_registry()
 	for i in range(RoomRegistry.MAX_ROOMS):
+		if i % RoomRegistry.CREATE_PER_SERVER == 0:
+			full.tick(RoomRegistry.CREATE_WINDOW + 1.0)
 		full.create_room(7000 + i, "J%d" % i)
-	_check(full.room_count() == RoomRegistry.MAX_ROOMS, "debería haber llegado al tope")
+	_check(full.room_count() == RoomRegistry.MAX_ROOMS, "debería haber llegado al tope y llegó a %d" % full.room_count())
+
+	full.tick(RoomRegistry.CREATE_WINDOW + 1.0)
 	_check(full.create_room(9999, "Uno más").is_empty(), "pasado el tope no debería crear más salas")
+	_check(_last_error_for(9999) == "servidor_lleno", "el motivo debería ser servidor_lleno")
 	_check(_last_error_for(9999) == "servidor_lleno", "el motivo debería ser servidor_lleno")
 
 
@@ -636,24 +643,90 @@ func _test_expiry() -> void:
 	reg.tick(Room.EMPTY_ROOM_TTL + 1.0)
 	_check(reg.room_count() == 1, "una sala con gente no debería vencer tan pronto")
 
-	# Vacía, se recoge. Pero no en el acto: se le da un rato para que quien se cayó y
-	# vuelve enseguida encuentre su mesa donde estaba.
+	# Vacía y SIN haber jugado, se recoge enseguida: no hay a quién esperar, porque
+	# nadie tiene silla ni mano a la que volver. Pero no en el acto — a quien acaba de
+	# repartir el código se le da un momento para volver a la misma sala.
 	reg.leave(701)
-	_check(reg.room_by_code(code) != null, "la sala no debería desaparecer al quedar vacía")
-	reg.tick(Room.EMPTY_ROOM_TTL - 1.0)
+	_check(reg.room_by_code(code) != null, "no debería desaparecer en el mismo instante")
+	reg.tick(Room.UNPLAYED_ROOM_TTL - 1.0)
 	_check(reg.room_count() == 1, "todavía no debería haber vencido")
 	reg.tick(2.0)
-	_check(reg.room_count() == 0, "la sala vacía debería haberse recogido")
+	_check(reg.room_count() == 0, "una sala vacía que nunca jugó debería recogerse pronto")
 
 	# Y quien apuntaba a esa sala queda libre para crear otra.
 	_check(not reg.create_room(701, "Ana").is_empty(), "debería poder crear una sala nueva")
 
+	# La que SÍ jugó es otra cosa: esa se guarda los cinco minutos, que es lo que le da
+	# tiempo a volver a quien se le cayó la conexión en mitad de una mano.
+	var played := _new_registry()
+	var played_code: String = played.create_room(801, "Ana")
+	played.room_by_code(played_code).start_match(801, {"target_score": 100})
+	played.leave(801)
+	played.tick(Room.UNPLAYED_ROOM_TTL + 1.0)
+	_check(played.room_count() == 1, "una mesa que estaba jugando debería esperar a quien se cayó")
+	played.tick(Room.EMPTY_ROOM_TTL)
+	_check(played.room_count() == 0, "pasados los cinco minutos sí debería recogerse")
+
 	# Una sala con gente pero abandonada del todo también vence, con mucha más
 	# paciencia: si no, una partida colgada vive para siempre.
 	var idle := _new_registry()
-	idle.create_room(801, "Ana")
+	idle.create_room(901, "Ana")
 	idle.tick(Room.IDLE_ROOM_TTL + 1.0)
 	_check(idle.room_count() == 0, "una sala abandonada debería vencer al final")
+
+
+## Los dos límites de creación de salas.
+##
+## Lo que evitan: que una conexión se quede con el cupo del servidor sin jugar ni una
+## ficha. El de por conexión frena a un cliente con un error en bucle; el del servidor
+## entero es el que de verdad pone techo, porque no depende de saber quién pide — y una
+## conexión nueva trae cuota nueva, así que por conexión sola no alcanzaría.
+func _test_create_limits() -> void:
+	var reg := _new_registry()
+
+	# Tres salas seguidas se pueden: crear, salir, crear. La cuarta ya no.
+	for i in range(RoomRegistry.CREATE_PER_PEER):
+		var code: String = reg.create_room(600, "Ana")
+		_check(not code.is_empty(), "la sala %d debería poder crearse" % (i + 1))
+		reg.leave(600)
+
+	_sent = []
+	_check(reg.create_room(600, "Ana").is_empty(), "la cuarta sala seguida no debería crearse")
+	_check(_last_error_for(600) == "demasiadas_salas", "el motivo debería ser demasiadas_salas, y fue %s" % _last_error_for(600))
+
+	# Pasada la ventana, vuelve a poder.
+	reg.tick(RoomRegistry.CREATE_WINDOW + 1.0)
+	_check(not reg.create_room(600, "Ana").is_empty(), "pasada la ventana debería poder otra vez")
+	reg.leave(600)
+
+	# Y el límite del servidor entero: se reparte entre muchas conexiones, para que no
+	# lo pare el de por conexión, y aun así se corta.
+	var flood := _new_registry()
+	var made := 0
+	var peer := 2000
+	while made < RoomRegistry.CREATE_PER_SERVER:
+		peer += 1
+		if flood.create_room(peer, "Bot").is_empty():
+			break
+		flood.leave(peer)
+		made += 1
+	_check(made == RoomRegistry.CREATE_PER_SERVER, "debería dejar crear %d y dejó %d" % [RoomRegistry.CREATE_PER_SERVER, made])
+
+	peer += 1
+	_sent = []
+	_check(flood.create_room(peer, "Bot").is_empty(), "pasado el límite del servidor no debería crearse ninguna")
+	_check(_last_error_for(peer) == "servidor_ocupado", "el motivo debería ser servidor_ocupado, y fue %s" % _last_error_for(peer))
+
+	# Lo que no se toca: entrar a una sala que ya existe. El límite es de CREAR, no de
+	# jugar — si no, el cuarto amigo en llegar se quedaría afuera.
+	var host := 3000
+	var open_code: String = flood.create_room(host, "Ana")
+	_check(open_code.is_empty(), "con el límite agotado tampoco crea el anfitrión")
+	flood.tick(RoomRegistry.CREATE_WINDOW + 1.0)
+	open_code = flood.create_room(host, "Ana")
+	_check(not open_code.is_empty(), "y pasada la ventana vuelve a crear")
+	for i in range(3):
+		_check(not flood.join_room(host + 1 + i, open_code, "J%d" % i).is_empty(), "entrar a una sala no debería gastar cuota de creación")
 
 
 # ===========================================================================
