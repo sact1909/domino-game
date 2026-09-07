@@ -23,6 +23,9 @@ const SETTINGS_PATH := "user://lobby.cfg"
 ## El mismo lienzo fijo que la mesa: Godot lo escala a la ventana del jugador.
 const SCREEN_SIZE := Vector2(1920, 1080)
 
+## El paño de la mesa, el mismo archivo que usa la pantalla de juego.
+const TABLE_BACKGROUND := "res://assets/mesa_fondo.jpg"
+
 ## Nombres de los puestos, en el mismo orden que en la mesa. Acá son la IDENTIDAD de la
 ## silla: los enfrentados (0-2 y 1-3) son compañeros, y por eso elegir silla es elegir
 ## pareja.
@@ -81,12 +84,7 @@ var spin_pase_salida: SpinBox
 # Construcción
 # ===========================================================================
 func _ready() -> void:
-	var bg := ColorRect.new()
-	bg.color = Color(0.09, 0.28, 0.16)
-	bg.position = Vector2.ZERO
-	bg.size = SCREEN_SIZE
-	add_child(bg)
-
+	_build_background()
 	_build_entry()
 	_build_room()
 	_show_screen(Screen.ENTRY)
@@ -105,6 +103,41 @@ func _ready() -> void:
 		_wire(transport)
 		add_child(transport)
 		transport.begin()
+
+
+## El mismo paño que la mesa, y por la misma razón: el lobby es la antesala de esa mesa
+## y con un verde plano parecía otra aplicación. Debajo va el color liso de respaldo, así
+## que si la imagen falta se ve verde y los formularios se siguen leyendo.
+##
+## La ruta se repite acá en vez de importarse de la pantalla de juego: son dos escenas
+## que no se conocen entre sí a propósito —el lobby no sabe nada de la mesa salvo que le
+## entrega el socket— y no vale la pena romper eso por un texto.
+func _build_background() -> void:
+	var felt := ColorRect.new()
+	felt.color = Color(0.08, 0.33, 0.16)
+	felt.position = Vector2.ZERO
+	felt.size = SCREEN_SIZE
+	felt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(felt)
+
+	var cloth := TextureRect.new()
+	cloth.texture = load(TABLE_BACKGROUND)
+	cloth.position = Vector2.ZERO
+	cloth.size = SCREEN_SIZE
+	cloth.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	cloth.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	cloth.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(cloth)
+
+	# El mismo velo que lleva el menú de arranque de la mesa, con el mismo valor. Sin él
+	# esta pantalla se veía bastante más clara que aquella y el salto entre las dos era
+	# raro: son el mismo momento del juego, antes de repartir.
+	var veil := ColorRect.new()
+	veil.color = Color(0, 0, 0, 0.5)
+	veil.position = Vector2.ZERO
+	veil.size = SCREEN_SIZE
+	veil.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(veil)
 
 
 func _build_entry() -> void:
@@ -624,17 +657,20 @@ func _spin(parent: VBoxContainer, label_text: String, initial: int, low: int, hi
 	return spin
 
 
-## El fondo de un PanelContainer no es opaco por defecto, y sin esto se vería el verde de
+## El fondo de un PanelContainer no es opaco por defecto, y sin esto se vería el paño de
 ## la mesa atravesando el texto.
+##
+## Los valores son los MISMOS que los del cartel de la pantalla de juego (su
+## _apply_dialog_style). Antes no lo eran —fondo más claro y borde crema y más grueso— y
+## se notaba al pasar de una pantalla a la otra: parecían dos aplicaciones distintas.
 func _style(panel: PanelContainer) -> void:
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.10, 0.14, 0.11, 1.0)
-	sb.border_color = Color(0.9, 0.85, 0.7)
-	sb.set_border_width_all(3)
+	sb.bg_color = Color(0.06, 0.13, 0.09)
+	sb.border_color = Color(0.55, 0.62, 0.55)
+	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(10)
 	sb.set_content_margin_all(22)
 	panel.add_theme_stylebox_override("panel", sb)
-
 
 # ===========================================================================
 # Lo que se recuerda entre sesiones

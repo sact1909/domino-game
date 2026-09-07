@@ -188,6 +188,15 @@ var left_stack: VBoxContainer
 var right_title: Label
 var right_stack: VBoxContainer
 
+## Todos los muebles de la mesa cuelgan de acá: los cuatro puestos, el tablero, el
+## registro, la esquina de meta y puntas, y el aviso flotante. Agrupados se pueden
+## esconder de una vez, que es lo que hace falta mientras está el menú de arranque: sin
+## eso, detrás del cartel se ven los nombres de los puestos, los marcadores en cero y un
+## registro vacío — una mesa que todavía no existe.
+##
+## El fondo NO cuelga de acá, a propósito: es lo único que tiene que seguir viéndose.
+var table: Control
+
 var board_viewport: Control
 
 var log_rt: RichTextLabel
@@ -256,6 +265,7 @@ var leave_button: Button
 # ===========================================================================
 func _ready() -> void:
 	_build_background()
+	_build_table_root()
 	_build_info_corner()
 	_build_top_panel()
 	_build_own_panel()
@@ -271,10 +281,9 @@ func _ready() -> void:
 	# El transporte se engancha con la interfaz ya construida, porque begin() puede
 	# contestar en el acto —en local lo hace— y esos manejadores ya dibujan.
 	transport = _take_transport()
-	if online_mode:
-		# La configuración ya se eligió en el lobby, y el reparto lo manda el servidor:
-		# no hay nada que preguntar acá.
-		start_overlay.visible = false
+	# En red la configuración ya se eligió en el lobby y el reparto lo manda el servidor,
+	# así que no hay nada que preguntar: se va derecho a la mesa.
+	_show_start_overlay(not online_mode)
 	transport.seat_assigned.connect(_on_seat_assigned)
 	transport.snapshot.connect(_on_snapshot)
 	transport.events.connect(_on_events)
@@ -329,6 +338,24 @@ func _build_background() -> void:
 	add_child(cloth)
 
 
+## El nodo del que cuelgan los muebles de la mesa. No pinta nada ni intercepta el ratón:
+## está solo para poder enseñarlos u ocultarlos de una vez. Va justo encima del fondo, así
+## que el orden de dibujado queda igual que antes: fondo, mesa, carteles.
+func _build_table_root() -> void:
+	table = Control.new()
+	table.position = Vector2.ZERO
+	table.size = SCREEN_SIZE
+	table.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(table)
+
+
+## Enseña el menú de arranque, o lo quita y saca la mesa. Van juntos porque son dos caras
+## de lo mismo: mientras se elige la meta, la mesa todavía no está repartida.
+func _show_start_overlay(shown: bool) -> void:
+	start_overlay.visible = shown
+	table.visible = not shown
+
+
 ## Meta y puntas abiertas, en la esquina de arriba a la derecha.
 ##
 ## Son los dos datos que no pertenecen a ningún jugador: la meta no cambia en toda la
@@ -342,7 +369,7 @@ func _build_info_corner() -> void:
 	box.alignment = BoxContainer.ALIGNMENT_BEGIN
 	box.add_theme_constant_override("separation", 2)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(box)
+	table.add_child(box)
 
 	lbl_target = Label.new()
 	lbl_target.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -364,7 +391,7 @@ func _build_top_panel() -> void:
 	panel.position = TOP_PANEL_POS
 	panel.size = TOP_PANEL_SIZE
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	add_child(panel)
+	table.add_child(panel)
 
 	var title_row := HBoxContainer.new()
 	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -402,7 +429,7 @@ func _build_own_panel() -> void:
 	panel.position = OWN_PANEL_POS
 	panel.size = OWN_PANEL_SIZE
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	add_child(panel)
+	table.add_child(panel)
 
 	var title_row := HBoxContainer.new()
 	title_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -482,7 +509,7 @@ func _build_side_panel(at: Vector2, screen_pos: int, toward_left_edge: bool, kee
 	panel.position = at
 	panel.size = SIDE_PANEL_SIZE
 	panel.alignment = BoxContainer.ALIGNMENT_BEGIN
-	add_child(panel)
+	table.add_child(panel)
 
 	# El centrador se queda con TODO el alto del panel, y dentro la columna queda en el
 	# medio sin importar cuántas fichas le falten. Sin esto colgaban del borde de arriba y
@@ -526,7 +553,7 @@ func _build_side_panel(at: Vector2, screen_pos: int, toward_left_edge: bool, kee
 ## dibujado.
 func _build_side_title(screen_pos: int, toward_left_edge: bool, keep_title: Callable) -> void:
 	var dot: Panel = _make_turn_dot()
-	add_child(dot)
+	table.add_child(dot)
 	turn_dots[screen_pos] = dot
 
 	var title := Label.new()
@@ -538,7 +565,7 @@ func _build_side_title(screen_pos: int, toward_left_edge: bool, keep_title: Call
 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 14)
 	title.rotation_degrees = -90.0 if toward_left_edge else 90.0
-	add_child(title)
+	table.add_child(title)
 	seat_titles[screen_pos] = title
 	keep_title.call(title)
 
@@ -624,14 +651,14 @@ func _build_board_area() -> void:
 	board_viewport.position = BOARD_POS
 	board_viewport.size = BOARD_SIZE
 	board_viewport.clip_contents = true
-	add_child(board_viewport)
+	table.add_child(board_viewport)
 
 
 func _build_log_panel() -> void:
 	var panel := PanelContainer.new()
 	panel.position = LOG_PANEL_POS
 	panel.size = LOG_PANEL_SIZE
-	add_child(panel)
+	table.add_child(panel)
 
 	var vb := VBoxContainer.new()
 	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -720,7 +747,7 @@ func _build_toast() -> void:
 	sb.set_corner_radius_all(8)
 	sb.set_content_margin_all(10)
 	toast_panel.add_theme_stylebox_override("panel", sb)
-	add_child(toast_panel)
+	table.add_child(toast_panel)
 
 	toast_label = Label.new()
 	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -937,7 +964,10 @@ func _build_game_over_overlay() -> void:
 
 func _build_start_overlay() -> void:
 	start_overlay = ColorRect.new()
-	start_overlay.color = Color(0, 0, 0, 0.85)
+	# El velo era para atenuar la mesa que quedaba detrás. Ya no hay mesa detrás —solo el
+	# paño— así que se aclara: con 0.85 el fondo no se veía y la pantalla quedaba negra.
+	# El cartel no depende de esto para leerse, porque tiene su propio fondo opaco.
+	start_overlay.color = Color(0, 0, 0, 0.5)
 	start_overlay.position = Vector2.ZERO
 	start_overlay.size = SCREEN_SIZE
 	add_child(start_overlay)
@@ -1081,7 +1111,7 @@ func _on_start_pressed() -> void:
 		"bonus_capicua": int(spin_capicua.value),
 		"bonus_pase_salida": int(spin_pase_salida.value),
 	}
-	start_overlay.visible = false
+	_show_start_overlay(false)
 	log_rt.clear()
 	_log("Partida nueva. Meta: %d puntos." % config.target_score)
 	_log("Bonificaciones — pase seguido: %d, capicúa: %d, pase de salida: %d." % [config.bonus_pase_seguido, config.bonus_capicua, config.bonus_pase_salida])
@@ -1122,7 +1152,7 @@ func _on_play_again_pressed() -> void:
 		return
 	game_over_overlay.visible = false
 	if not online_mode:
-		start_overlay.visible = true
+		_show_start_overlay(true)
 		return
 	# La sala se mantiene: la misma gente en las mismas sillas. El servidor la devuelve
 	# al lobby, y allá se espera a los demás.
