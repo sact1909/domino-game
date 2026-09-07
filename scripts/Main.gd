@@ -213,6 +213,11 @@ var pending_hand_idx: int = -1
 # jugador ve un error que no entiende. Mientras esto está puesto, la mano se apaga.
 var awaiting_play: bool = false
 
+# Si el enlace está caído y se está intentando volver. Mientras dure, la mano se apaga:
+# no hay a quién mandarle una jugada, y un clic que no llega a ningún sitio se siente
+# como que el juego se rompió.
+var link_down: bool = false
+
 # Aviso flotante (pases, bonificaciones) y las bolitas de turno de cada puesto.
 var toast_panel: PanelContainer
 var toast_label: Label
@@ -274,6 +279,8 @@ func _ready() -> void:
 	transport.disconnected.connect(_on_disconnected)
 	transport.seats_changed.connect(_on_seats_changed)
 	transport.turn_clock.connect(_on_turn_clock)
+	transport.reconnecting.connect(_on_reconnecting)
+	transport.reconnected.connect(_on_reconnected)
 	add_child(transport)
 	transport.begin()
 
@@ -699,12 +706,16 @@ func _build_toast() -> void:
 
 # Aparece, se queda un momento y se desvanece. Si llega otro aviso antes de que
 # termine, se corta el anterior para que no se solapen los desvanecidos.
-func _show_toast(text: String) -> void:
+func _show_toast(text: String, keep: bool = false) -> void:
 	toast_label.text = text
 	if toast_tween != null and toast_tween.is_valid():
 		toast_tween.kill()
 	toast_panel.modulate = Color(1, 1, 1, 1)
 	toast_panel.visible = true
+	# Un aviso que hay que dejar puesto no se desvanece: se queda hasta que otro lo
+	# reemplace. Es para lo que no se ha resuelto todavía, como una reconexión en curso.
+	if keep:
+		return
 	toast_tween = create_tween()
 	toast_tween.tween_interval(1.1)
 	toast_tween.tween_property(toast_panel, "modulate:a", 0.0, 0.7)
@@ -1148,6 +1159,29 @@ func _on_seats_changed(names: Array) -> void:
 	seat_owners = names
 	if not pub.is_empty():
 		_render_all()
+
+
+## Se cayó el enlace pero la silla sigue siendo nuestra y el transporte está volviendo.
+## No se cierra la mesa: se avisa, se apaga la mano y se espera.
+func _on_reconnecting() -> void:
+	link_down = true
+	_cancel_end_choice()
+	# El reloj que se estaba viendo ya no dice nada: la cuenta la lleva el servidor y de
+	# él no estamos oyendo. Al volver llega el que corre de verdad.
+	clock_seat = -1
+	clock_left = 0.0
+	_update_turn_timers()
+	_render_own_hand()
+	_show_toast("Se cayó la conexión — volviendo a la mesa…", true)
+	_log("[b]Se cayó la conexión.[/b] Volviendo a la mesa…")
+
+
+## Volvimos a la misma silla. El estado, la mano y el reloj llegan detrás por sus
+## canales de siempre, así que acá no hay nada que rearmar.
+func _on_reconnected() -> void:
+	link_down = false
+	_show_toast("Conexión recuperada")
+	_log("[b]Conexión recuperada.[/b]")
 
 
 ## Por quién se espera y cuánto le queda. Cero significa que no se espera por nadie
@@ -1891,7 +1925,7 @@ func _render_own_hand() -> void:
 	var legal_by_idx := {}
 	# Con la elección de punta abierta la mano queda apagada: la decisión pendiente es
 	# esa, y se ve que no se puede tocar otra ficha en vez de que el clic no haga nada.
-	if phase == Phase.PLAYING and pub.current_player == local_seat and pending_hand_idx < 0 and not awaiting_play:
+	if phase == Phase.PLAYING and pub.current_player == local_seat and pending_hand_idx < 0 and not awaiting_play and not link_down:
 		for m in mine.legal_moves:
 			legal_by_idx[m.idx] = true
 
@@ -2007,6 +2041,14 @@ func _rejection_text(reason: String) -> String:
 			return "La mano ya terminó"
 		"tiene_jugada":
 			return "Tienes ficha jugable: debes jugarla"
+		# Los tres de abajo no son jugadas: son la silla que no se pudo recuperar al
+		# volver de una caída.
+		"credencial_invalida":
+			return "Tu puesto ya no está reservado"
+		"silla_ocupada":
+			return "Alguien más está en tu puesto"
+		"sala_no_existe":
+			return "La sala ya no existe"
 	return "Esa jugada no se pudo aplicar"
 
 

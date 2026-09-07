@@ -99,6 +99,12 @@ func _handle_packet(from: int, raw: PackedByteArray) -> void:
 		_registry.join_room(from, str(msg.get("code", "")), str(msg.get("name", "")))
 		return
 
+	if msg_type == Protocol.C_REJOIN:
+		if not _protocol_ok(from, msg):
+			return
+		_registry.rejoin_room(from, str(msg.get("code", "")), str(msg.get("token", "")))
+		return
+
 	if msg_type == Protocol.C_LEAVE_ROOM:
 		_registry.leave(from)
 		return

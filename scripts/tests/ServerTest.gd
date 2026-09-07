@@ -44,6 +44,8 @@ func run() -> void:
 	_test_disconnect_on_turn()
 	_test_turn_clock()
 	_test_no_clock_for_empty_seat()
+	_test_rejoin()
+	_test_rejoin_on_own_turn()
 	_test_host_organizes()
 	_test_play_again()
 	_test_close_room()
@@ -497,6 +499,86 @@ func _test_no_clock_for_empty_seat() -> void:
 	_check(room.has_pending_turn(), "una silla vacía debería tener el relevo agendado")
 	_check(_clock_seconds_for(820) == 0.0, "el reloj de una silla vacía debería viajar en cero")
 
+
+## Volver a su silla después de una caída, con la credencial que se recibió al entrar.
+##
+## Es lo que hace que caerse no cueste la mano: la silla sigue siendo suya, la IA la
+## cubre mientras tanto, y al volver recupera SUS fichas y sigue jugando.
+func _test_rejoin() -> void:
+	var room := _new_room()
+	for i in range(4):
+		room.add_member(900 + i, "J%d" % i)
+	room.start_match(900, {"target_score": 100})
+
+	# La credencial se le da al entrar y es distinta para cada silla.
+	var tokens: Array = []
+	for i in range(4):
+		tokens.append(room.token_of(900 + i))
+		_check(not str(tokens[i]).is_empty(), "el jugador %d debería tener credencial" % i)
+	for i in range(4):
+		for j in range(i + 1, 4):
+			_check(str(tokens[i]) != str(tokens[j]), "dos sillas no pueden compartir credencial")
+
+	# Se cae alguien a quien NO le toca, para que la mano siga su curso sin él.
+	var seat: int = (int(_last_pub.current_player) + 1) % GameState.SEAT_COUNT
+	var gone: int = 900 + seat
+	var tiles_before: Array = _tile_codes(_mine_by_peer.get(gone, {}))
+	room.remove_member(gone)
+	_check(room.seat_of(gone) < 0, "quien se cayó no debería seguir sentado")
+
+	# Con la credencial equivocada no se entra a la silla de nadie.
+	_sent = []
+	_check(room.rejoin(950, "0000000000000000") < 0, "una credencial inventada no debería sentar a nadie")
+	_check(_last_error_for(950) == "credencial_invalida", "el motivo debería ser credencial_invalida, y fue %s" % _last_error_for(950))
+
+	# Ni en una silla que ya tiene a alguien, aunque la credencial sea la de esa silla.
+	var busy_seat: int = int(_last_pub.current_player)
+	_sent = []
+	_check(room.rejoin(951, str(tokens[busy_seat])) < 0, "no se debería poder entrar a una silla ocupada")
+	_check(_last_error_for(951) == "silla_ocupada", "el motivo debería ser silla_ocupada, y fue %s" % _last_error_for(951))
+
+	# Y con la suya, vuelve a su puesto — con otra conexión, que es lo que pasa de verdad.
+	_sent = []
+	_check(room.rejoin(960, str(tokens[seat])) == seat, "debería volver al puesto %d" % seat)
+	room.catch_up(960)
+	_check(room.seat_of(960) == seat, "la silla debería quedar a nombre de la conexión nueva")
+
+	# Y le llega la mesa al día: el estado con SUS fichas, y las mismas que dejó.
+	var mine: Dictionary = _mine_by_peer.get(960, {})
+	_check(not mine.is_empty(), "al que vuelve debería llegarle su estado")
+	_check(_tile_codes(mine) == tiles_before, "debería recuperar las mismas fichas que dejó")
+	_check(_has_message(960, Protocol.S_HAND_STARTED), "al que vuelve debería llegarle que hay una mano en curso")
+	_check(_clock_seconds_for(960) > 0.0, "al que vuelve debería llegarle el reloj del turno en curso")
+
+
+## Volver JUSTO cuando le tocaba. Es el caso delicado: al caerse, la sala agendó jugarle
+## por silla vacía, y si ese relevo sigue en pie cuando vuelve, le mueve la ficha en la
+## cara. Al volver, el turno vuelve a ser suyo y con su reloj entero.
+func _test_rejoin_on_own_turn() -> void:
+	var room := _new_room()
+	for i in range(4):
+		room.add_member(970 + i, "J%d" % i)
+	room.start_match(970, {"target_score": 100})
+
+	var seat: int = int(_last_pub.current_player)
+	var token: String = room.token_of(970 + seat)
+	var board_before: int = int(_last_pub.board.size())
+
+	room.remove_member(970 + seat)
+	_check(room.has_pending_turn(), "al caerse en su turno la sala debería agendar el relevo")
+
+	# Vuelve antes de que el relevo se cumpla.
+	_check(room.rejoin(980, token) == seat, "debería volver a su puesto")
+	room.catch_up(980)
+	_check(not room.has_pending_turn(), "al volver, el relevo agendado debería quedar sin efecto")
+	_check(room.seconds_left_for_turn() == Room.TURN_TIMEOUT, "debería arrancar su reloj completo")
+
+	# Y la prueba de que el relevo se soltó de verdad: pasa el rato de la pausa de la IA
+	# y la mesa sigue igual, esperando por él.
+	room.tick(1.0)
+	_check(int(_last_pub.board.size()) == board_before, "nadie debería haberle jugado la ficha")
+	_check(int(_last_pub.current_player) == seat, "el turno debería seguir siendo suyo")
+
 # ===========================================================================
 # Registro de salas
 # ===========================================================================
@@ -625,6 +707,22 @@ func _last_error_for(peer_id: int) -> String:
 
 
 ## Los segundos del último reloj de turno que le llegó a alguien, o -1 si no le llegó
+## Las fichas de una mano como pares de números, para poder compararlas. Los objetos
+## Domino no se comparan entre sí, y lo que importa es que sean LAS MISMAS fichas.
+func _tile_codes(mine: Dictionary) -> Array:
+	var out: Array = []
+	for t in mine.get("tiles", []):
+		out.append([t.a, t.b])
+	return out
+
+
+func _has_message(peer_id: int, kind: String) -> bool:
+	for msg in _messages_for(peer_id):
+		if str(msg.get("type", "")) == kind:
+			return true
+	return false
+
+
 ## ninguno. Se lee de lo que salió por el cable, no de la sala.
 func _clock_seconds_for(peer_id: int) -> float:
 	for i in range(_sent.size() - 1, -1, -1):

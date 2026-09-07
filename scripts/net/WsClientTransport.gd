@@ -29,6 +29,12 @@ const FALLBACK_URL := "ws://127.0.0.1:8090"
 ## él y sale un ejecutable de desarrollo que apunta a localhost.
 const BAKED_URL_PATH := "res://server_url.txt"
 
+## Reintentos de reconexión y pausa entre uno y otro. Veinte segundos en total: da margen
+## para un bache de red y se queda corto respecto a los 45 segundos que la sala aguanta
+## esperando por el turno, así que quien vuelve suele encontrar la mano donde la dejó.
+const RECONNECT_TRIES := 10
+const RECONNECT_WAIT := 2.0
+
 ## Estado del enlace. Se distingue "conectando" de "abierto" porque mandar algo antes
 ## de que el socket esté listo se pierde sin aviso.
 enum Link { IDLE, CONNECTING, OPEN, CLOSED }
@@ -78,6 +84,17 @@ var _clock_deadline: float = 0.0
 ## qué sala está y cómo está compuesta.
 var _room_code: String = ""
 var _is_host: bool = false
+
+## La credencial de la silla, para volver a ella si se cae el enlace. Se guarda solo en
+## memoria: sirve para una caída de conexión, que es lo que pasa de verdad, y no para
+## reabrir el juego más tarde — así no queda escrita en el disco de nadie.
+var _token: String = ""
+
+## Estado del reintento: si estamos volviendo, cuántos intentos van y cuánto falta para
+## el siguiente.
+var _reconnecting: bool = false
+var _tries: int = 0
+var _wait: float = 0.0
 var _last_players: Array = []
 var _last_host_seat: int = -1
 var _last_room_phase: int = Protocol.ROOM_LOBBY
@@ -195,7 +212,10 @@ func close() -> void:
 # ===========================================================================
 # Bombeo del socket
 # ===========================================================================
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	if _reconnecting and _link != Link.CONNECTING and _link != Link.OPEN:
+		_tick_reconnect(delta)
+		return
 	if _link == Link.IDLE or _link == Link.CLOSED:
 		return
 
@@ -205,20 +225,79 @@ func _process(_delta: float) -> void:
 	if _link == Link.CONNECTING:
 		if status == MultiplayerPeer.CONNECTION_CONNECTED:
 			_link = Link.OPEN
-			connected.emit()
+			# Volviendo de una caída no se avisa "conectado": nadie está esperando eso.
+			# Lo que hay que hacer es reclamar la silla; el aviso sale cuando el servidor
+			# conteste que sigue siendo nuestra.
+			if _reconnecting:
+				_claim_seat()
+			else:
+				connected.emit()
 		elif status == MultiplayerPeer.CONNECTION_DISCONNECTED:
+			if _reconnecting:
+				# Este intento no entró. Se vuelve a la espera y se prueba otra vez.
+				_link = Link.CLOSED
+				return
 			_link = Link.CLOSED
 			connection_failed.emit("no_se_pudo_conectar")
 			return
 	elif status == MultiplayerPeer.CONNECTION_DISCONNECTED:
-		# Se cayó con la partida en curso. La pantalla tiene que decirlo: si no, la
-		# mesa se queda quieta y parece que el juego se colgó.
+		# Se cayó el enlace. Si hay silla que reclamar se intenta volver a ella en vez de
+		# cerrar la mesa: del otro lado la mano sigue y el puesto sigue siendo nuestro.
 		_link = Link.CLOSED
+		if _can_reclaim_seat():
+			_start_reconnect()
+			return
 		_emit_disconnected()
 		return
 
 	while _peer.get_available_packet_count() > 0:
 		_receive(_peer.get_packet())
+
+## Se puede reclamar la silla si el servidor nos dio una credencial para ella. Sin eso no
+## hay nada que reclamar: estábamos en la pantalla de entrada, o la sala se cerró.
+func _can_reclaim_seat() -> bool:
+	return not _room_code.is_empty() and not _token.is_empty()
+
+
+func _start_reconnect() -> void:
+	_reconnecting = true
+	_tries = 0
+	_wait = 0.0
+	_emit_reconnecting()
+
+
+## Espera, abre un socket nuevo y vuelve a probar, hasta que entre o se agoten los
+## intentos. El socket se rehace en cada intento porque uno cerrado no se reabre.
+func _tick_reconnect(delta: float) -> void:
+	_wait -= delta
+	if _wait > 0.0:
+		return
+
+	if _tries >= RECONNECT_TRIES:
+		_reconnecting = false
+		_link = Link.CLOSED
+		_emit_disconnected()
+		return
+
+	_tries += 1
+	_wait = RECONNECT_WAIT
+	_peer = WebSocketMultiplayerPeer.new()
+	if _peer.create_client(_url) != OK:
+		_link = Link.CLOSED
+		return
+	_link = Link.CONNECTING
+
+
+## Pide la silla de vuelta. Si la credencial ya no vale (la sala venció, o alguien más se
+## sentó ahí) el servidor contesta con un error y ahí sí se da por perdida.
+func _claim_seat() -> void:
+	_send({
+		"type": Protocol.C_REJOIN,
+		"protocol": Protocol.VERSION,
+		"code": _room_code,
+		"token": _token,
+	})
+
 
 
 func _send(msg: Dictionary) -> void:
@@ -252,8 +331,15 @@ func _receive(raw: PackedByteArray) -> void:
 			_seat = int(msg.get("seat", -1))
 			_room_code = str(msg.get("code", ""))
 			_is_host = bool(msg.get("is_host", false))
+			_token = str(msg.get("token", ""))
 			_emit_seat_assigned(_seat)
 			room_joined.emit(_room_code, _seat, _is_host)
+			if _reconnecting:
+				# La silla volvió a ser nuestra. Lo que sigue —estado, mano, reloj— llega
+				# por los canales de siempre, así que no hay nada que rearmar acá.
+				_reconnecting = false
+				_tries = 0
+				_emit_reconnected()
 		Protocol.S_SEAT_ASSIGNED:
 			_seat = int(msg.get("seat", -1))
 			_emit_seat_assigned(_seat)
@@ -291,7 +377,15 @@ func _receive(raw: PackedByteArray) -> void:
 		Protocol.S_MATCH_ENDED:
 			_emit_match_ended(int(msg.get("winner_team", -1)))
 		Protocol.S_ERROR:
-			_emit_server_error(str(msg.get("reason", "")))
+			var reason: String = str(msg.get("reason", ""))
+			_emit_server_error(reason)
+			if _reconnecting:
+				# El servidor rechazó la silla: la credencial ya no vale, o alguien más se
+				# sentó ahí. Reintentar no la va a devolver, así que se da por perdida.
+				_reconnecting = false
+				_forget_room()
+				close()
+				_emit_disconnected()
 		Protocol.S_PONG:
 			pass
 
@@ -353,6 +447,8 @@ func in_room() -> bool:
 ## entrar a otra con la misma conexión.
 func _forget_room() -> void:
 	_room_code = ""
+	_token = ""
+	_clock_seat = -1
 	_is_host = false
 	_seat = -1
 	_last_players = []

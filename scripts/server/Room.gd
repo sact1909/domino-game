@@ -76,6 +76,19 @@ var _pending: Dictionary = {}
 ## este es la espera por alguien que todavía tiene su turno.
 var _turn_clock: Dictionary = {}
 
+## Credencial de cada silla, para poder volver a sentarse después de una caída.
+##
+## Hace falta una porque la identidad de una conexión no sobrevive a la caída: al volver,
+## el socket es otro y el servidor no tiene manera de reconocer a nadie. Y no puede ser el
+## nombre: cualquiera que sepa el código de la sala podría decir que es Juan, sentarse en
+## su silla y ver sus fichas. Con una credencial que solo tiene su cliente, no.
+##
+## Sale de un generador APARTE del de la partida. Si saliera del mismo, entregarle a un
+## cliente 64 bits de esa secuencia le daría con qué adivinar la semilla del próximo
+## reparto — que sale del mismo randi().
+var _tokens: Dictionary = {}
+var _token_rng := RandomNumberGenerator.new()
+
 ## Segundos sin actividad, para la recolección de salas.
 var _idle: float = 0.0
 
@@ -86,6 +99,7 @@ var _acting_peer: int = -1
 
 func _init(room_code: String) -> void:
 	code = room_code
+	_token_rng.randomize()
 
 
 # ===========================================================================
@@ -106,6 +120,8 @@ func add_member(peer_id: int, raw_name: String) -> int:
 	_seat_of[peer_id] = seat
 	_peer_at[seat] = peer_id
 	_names[seat] = sanitize_name(raw_name)
+	# Credencial nueva: sentarse en una silla invalida la del que estuvo antes en ella.
+	_tokens[seat] = _new_token()
 	if _host_seat < 0:
 		_host_seat = seat
 
@@ -121,11 +137,13 @@ func remove_member(peer_id: int) -> void:
 	var seat: int = int(_seat_of[peer_id])
 	_seat_of.erase(peer_id)
 	_peer_at.erase(seat)
-	# El nombre se borra solo en el lobby. Con la partida en curso el puesto sigue
-	# siendo de esa persona (lo juega la IA mientras tanto) y el nombre tiene que
-	# seguir a la vista para que los demás sepan de quién es la silla.
+	# El nombre y la credencial se borran SOLO en el lobby. Con la partida en curso el
+	# puesto sigue siendo de esa persona y lo juega la IA mientras tanto: el nombre tiene
+	# que seguir a la vista para que los demás sepan de quién es la silla, y la credencial
+	# es lo único que le va a permitir volver a sentarse.
 	if phase == Phase.LOBBY:
 		_names.erase(seat)
+		_tokens.erase(seat)
 
 	if _host_seat == seat:
 		_host_seat = _lowest_occupied_seat()
@@ -142,6 +160,93 @@ func remove_member(peer_id: int) -> void:
 	_touch()
 	broadcast_lobby()
 
+
+## Vuelve a sentar a alguien en SU silla, con la credencial que se le dio al entrar.
+## Devuelve el puesto, o -1 si la credencial no vale o si esa silla ya tiene a alguien.
+##
+## Funciona en cualquier fase. Con la partida en curso es el caso que importa —volver de
+## una caída sin perder la mano—, pero también sirve en el lobby: si se cayó esperando,
+## recupera su sitio en vez de que le toque otro y se le desarme la pareja.
+func rejoin(peer_id: int, token: String) -> int:
+	if _seat_of.has(peer_id):
+		return int(_seat_of[peer_id])
+
+	var seat: int = _seat_for_token(token)
+	if seat < 0:
+		_error(peer_id, "credencial_invalida")
+		return -1
+	# Ocupada quiere decir que alguien más está sentado ahí ahora. No se echa a nadie
+	# de una silla en la que está jugando, ni con la credencial correcta.
+	if _peer_at.has(seat):
+		_error(peer_id, "silla_ocupada")
+		return -1
+
+	_seat_of[peer_id] = seat
+	_peer_at[seat] = peer_id
+	# Si mientras estuvo fuera se quedó la sala sin anfitrión, lo es quien vuelve: sin
+	# eso la sala queda viva y nadie puede empezar ni cerrarla.
+	if _host_seat < 0:
+		_host_seat = seat
+
+	_touch()
+	return seat
+
+
+## Le pone al día la mesa a quien acaba de volver: el estado, la mano en curso y el
+## reloj del turno, todo SOLO para él — los demás no se enteran de nada porque para
+## ellos no cambió nada.
+##
+## El orden es el mismo con el que viaja en vivo (primero el estado y después "empezó la
+## mano") porque la pantalla lo necesita así: el aviso de mano nueva se dibuja leyendo el
+## estado que ya tiene que estar puesto.
+func catch_up(peer_id: int) -> void:
+	if _session == null or not _seat_of.has(peer_id):
+		return
+
+	var seat: int = int(_seat_of[peer_id])
+	_send(peer_id, {
+		"type": Protocol.S_SNAPSHOT,
+		"pub": Protocol.encode_public_view(_session.public_view()),
+		"mine": Protocol.encode_private_view(_session.private_view(seat)),
+	})
+
+	if phase != Phase.PLAYING or _session.hand_over():
+		return
+	_send(peer_id, {"type": Protocol.S_HAND_STARTED})
+
+	# Si volvió justo cuando le tocaba, la sala tenía agendado jugarle por silla vacía:
+	# se vuelve a anunciar el turno y con la silla ocupada eso cancela el relevo y le
+	# arranca su reloj. Si le toca a otro, solo se le dice cuánto le queda a ese.
+	if _session.current_seat() == seat:
+		_on_session_turn_ready(seat, _session.needs_forced_pass())
+		return
+	_send(peer_id, {
+		"type": Protocol.S_TURN_CLOCK,
+		"seat": int(_turn_clock.get("seat", -1)),
+		"seconds": seconds_left_for_turn(),
+	})
+
+
+## La credencial de quien está sentado en un puesto, para poder mandársela al entrar.
+func token_of(peer_id: int) -> String:
+	if not _seat_of.has(peer_id):
+		return ""
+	return str(_tokens.get(int(_seat_of[peer_id]), ""))
+
+
+func _seat_for_token(token: String) -> int:
+	if token.is_empty():
+		return -1
+	for seat in _tokens.keys():
+		if str(_tokens[seat]) == token:
+			return int(seat)
+	return -1
+
+
+## 64 bits en hexadecimal. No se escribe a mano ni se dicta, así que no hace falta que
+## sea corta ni que evite letras que se confundan, al contrario del código de la sala.
+func _new_token() -> String:
+	return "%08x%08x" % [_token_rng.randi(), _token_rng.randi()]
 
 ## Intercambia lo que hay en dos sillas. Es la ÚNICA manera de reorganizar la mesa, y
 ## solo la puede usar el anfitrión.
@@ -517,6 +622,9 @@ func _on_session_match_ended(winner_team: int) -> void:
 ## En los dos casos se le dice a la mesa cuánto se espera por ese puesto, y cuando no se
 ## espera nada va en cero: así el cliente no tiene que adivinar si hay reloj o no.
 func _on_session_turn_ready(seat: int, must_pass: bool) -> void:
+	# Un aviso de turno nuevo deja sin valor cualquier relevo agendado: era para el turno
+	# anterior, y cumplirlo ahora movería la silla equivocada.
+	_pending = {}
 	_turn_clock = {}
 
 	if _peer_at.has(seat) and not must_pass:
@@ -600,6 +708,7 @@ func play_again(peer_id: int) -> bool:
 	# partida anterior, y esto es una partida nueva con la misma gente.
 	_session = null
 	_pending = {}
+	_turn_clock = {}
 	_acting_peer = -1
 	_touch()
 	broadcast_lobby()

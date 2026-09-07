@@ -60,6 +60,15 @@ signal seats_changed(names: Array)
 ## la pantalla tiene que funcionar igual sin recibirlo.
 signal turn_clock(seat: int, seconds: float)
 
+## Se cayó el enlace pero se está intentando volver. Es distinto de "disconnected": ahí
+## no hay nada más que hacer, y acá la mesa sigue viva del otro lado y la silla sigue
+## siendo de quien se cayó, así que lo correcto es esperar y avisar, no cerrar la mesa.
+signal reconnecting()
+
+## Se volvió a la misma silla y de la misma mano. Lo que sigue llega por los canales de
+## siempre —el estado, la mano, el reloj—, así que la pantalla no tiene que rearmar nada.
+signal reconnected()
+
 ## Se perdió la conexión con la autoridad. En local no puede pasar; en red sí, y hay que
 ## decirlo, porque si no la mesa se queda quieta y parece que el juego se colgó.
 signal disconnected()
@@ -152,3 +161,11 @@ func _emit_seats_changed(names: Array) -> void:
 
 func _emit_turn_clock(seat: int, seconds: float) -> void:
 	turn_clock.emit(seat, seconds)
+
+
+func _emit_reconnecting() -> void:
+	reconnecting.emit()
+
+
+func _emit_reconnected() -> void:
+	reconnected.emit()

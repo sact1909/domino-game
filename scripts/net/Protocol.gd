@@ -33,6 +33,10 @@ const VERSION := 1
 # Del cliente al servidor.
 const C_CREATE_ROOM := "create_room"
 const C_JOIN_ROOM := "join_room"
+## Volver a SU silla después de una caída, con la credencial que se recibió al entrar.
+## Es distinto de entrar: entrar te sienta donde haya sitio y solo se puede en el lobby;
+## volver te devuelve tu puesto y funciona con la partida en curso.
+const C_REJOIN := "rejoin"
 ## Intercambiar dos sillas. Es la única manera de reorganizar la mesa y solo la usa el
 ## anfitrión: con una sola persona repartiendo los equipos no hay nada que negociar ni
 ## carrera que perder.

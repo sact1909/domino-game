@@ -95,6 +95,37 @@ func join_room(peer_id: int, raw_code: String, player_name: String) -> String:
 	return code
 
 
+## Vuelve a sentar a alguien en su silla con la credencial que se le dio al entrar.
+##
+## Es lo que hace útil que la sala no se destruya al quedarse vacía: se cae la conexión,
+## el cliente vuelve a marcar, presenta su credencial y sigue la misma mano.
+func rejoin_room(peer_id: int, raw_code: String, token: String) -> String:
+	if _room_of_peer.has(peer_id):
+		_error(peer_id, "ya_estas_en_una_sala")
+		return ""
+
+	var code: String = RoomCode.normalize(raw_code)
+	if not RoomCode.is_valid(code):
+		_error(peer_id, "codigo_invalido")
+		return ""
+	if not _rooms.has(code):
+		_error(peer_id, "sala_no_existe")
+		return ""
+
+	var room: Room = _rooms[code]
+	# El motivo del rechazo lo manda la sala, que es la que sabe si falló la credencial
+	# o si la silla ya tiene a alguien.
+	if room.rejoin(peer_id, token) < 0:
+		return ""
+
+	_room_of_peer[peer_id] = code
+	_announce_joined(peer_id, room)
+	# Y después de la lista de la sala, la mesa: el estado, la mano y el reloj. Va en ese
+	# orden para que reciba su silla antes que las fichas que hay en ella.
+	room.catch_up(peer_id)
+	return code
+
+
 ## Saca a alguien de su sala. La sala NO se destruye al quedar vacía: se deja vencer
 ## sola, así quien se cayó y vuelve enseguida encuentra su mesa donde estaba.
 func leave(peer_id: int) -> void:
@@ -177,6 +208,7 @@ func _announce_joined(peer_id: int, room: Room) -> void:
 		"code": room.code,
 		"seat": room.seat_of(peer_id),
 		"is_host": room.is_host(peer_id),
+		"token": room.token_of(peer_id),
 	})
 	room.broadcast_lobby()
 
