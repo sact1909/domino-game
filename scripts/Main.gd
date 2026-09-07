@@ -218,6 +218,14 @@ var toast_panel: PanelContainer
 var toast_label: Label
 var toast_tween: Tween
 var turn_dots: Array = [null, null, null, null]
+
+# Cuenta atrás del turno: la caja de cada puesto y por quién se espera. La lleva esta
+# pantalla desde el aviso del servidor, que es quien de verdad manda: acá solo se ve.
+# Jugando en local no llega el aviso y las cajas se quedan vacías.
+var turn_timers: Array = [null, null, null, null]
+var clock_seat: int = -1
+var clock_left: float = 0.0
+
 var own_title: Label
 
 # Pantalla de fin de mano: se queda esperando el botón "Continuar" en vez de seguir
@@ -265,6 +273,7 @@ func _ready() -> void:
 	transport.server_error.connect(_on_server_error)
 	transport.disconnected.connect(_on_disconnected)
 	transport.seats_changed.connect(_on_seats_changed)
+	transport.turn_clock.connect(_on_turn_clock)
 	add_child(transport)
 	transport.begin()
 
@@ -354,7 +363,7 @@ func _build_top_panel() -> void:
 	top_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	top_row.add_theme_constant_override("separation", HAND_TILE_GAP)
 	row_wrap.add_child(top_row)
-	row_wrap.add_child(_make_badge_spacer())
+	row_wrap.add_child(_make_badge_spacer(POS_TOP))
 
 
 func _build_own_panel() -> void:
@@ -385,7 +394,7 @@ func _build_own_panel() -> void:
 	row_wrap.add_theme_constant_override("separation", SCORE_BADGE_GAP)
 	panel.add_child(row_wrap)
 
-	row_wrap.add_child(_make_badge_spacer())
+	row_wrap.add_child(_make_badge_spacer(POS_BOTTOM))
 
 	own_hand_row = HBoxContainer.new()
 	own_hand_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -465,7 +474,7 @@ func _build_side_panel(at: Vector2, screen_pos: int, toward_left_edge: bool, kee
 	if toward_left_edge:
 		column_wrap.add_child(_make_score_badge(screen_pos))
 	else:
-		column_wrap.add_child(_make_badge_spacer())
+		column_wrap.add_child(_make_badge_spacer(screen_pos))
 
 	var stack := VBoxContainer.new()
 	stack.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -473,7 +482,7 @@ func _build_side_panel(at: Vector2, screen_pos: int, toward_left_edge: bool, kee
 	column_wrap.add_child(stack)
 
 	if toward_left_edge:
-		column_wrap.add_child(_make_badge_spacer())
+		column_wrap.add_child(_make_badge_spacer(screen_pos))
 	else:
 		column_wrap.add_child(_make_score_badge(screen_pos))
 
@@ -527,15 +536,23 @@ func _make_score_badge(screen_pos: int) -> PanelContainer:
 	score_labels[screen_pos] = label
 	return badge
 
-
-## Un hueco del tamaño del marcador para el otro extremo de la mano. Es lo que mantiene
-## las fichas centradas donde estaban antes de que el marcador existiera.
-func _make_badge_spacer() -> Control:
-	var gap := Control.new()
+## El hueco del otro extremo de la mano, que además enseña la cuenta atrás del turno.
+##
+## Nació como contrapeso del marcador: sin él, la mano entera se corría hacia un lado.
+## Y resulta ser el sitio exacto para el reloj — es una caja de tamaño FIJO pegada a las
+## fichas de ese jugador, así que la cuenta puede cambiar de 45 a 9 sin mover nada, y se
+## ve junto a la mano de quien estamos esperando en vez de en una esquina.
+func _make_badge_spacer(screen_pos: int) -> Control:
+	var gap := Label.new()
 	gap.custom_minimum_size = SCORE_BADGE_SIZE
 	gap.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	gap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	gap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	gap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	gap.add_theme_font_size_override("font_size", 20)
 	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	turn_timers[screen_pos] = gap
+	return gap
 	return gap
 
 
@@ -1132,6 +1149,50 @@ func _on_seats_changed(names: Array) -> void:
 	if not pub.is_empty():
 		_render_all()
 
+
+## Por quién se espera y cuánto le queda. Cero significa que no se espera por nadie
+## porque va a mover el servidor, así que la cuenta se apaga.
+##
+## De acá en adelante la cuenta la lleva _process con su propio reloj. No se vuelve a
+## preguntar: el servidor es el que decide de verdad cuándo se acabó el tiempo, y esto
+## solo tiene que enseñar una cifra que baje.
+func _on_turn_clock(seat: int, seconds: float) -> void:
+	if seconds <= 0.0:
+		clock_seat = -1
+		clock_left = 0.0
+	else:
+		clock_seat = seat
+		clock_left = seconds
+	_update_turn_timers()
+
+
+func _process(delta: float) -> void:
+	if clock_seat < 0:
+		return
+	var before: int = ceili(clock_left)
+	clock_left = maxf(0.0, clock_left - delta)
+	# Solo se redibuja cuando cambia el número en pantalla, no en cada cuadro.
+	if ceili(clock_left) != before:
+		_update_turn_timers()
+
+
+## Enseña la cuenta en la caja del puesto por el que se espera, y vacía las otras tres.
+##
+## Se ve en la mesa de TODOS, no solo en la de quien tiene el turno: al resto le explica
+## por qué la mesa está detenida y que se va a resolver sola.
+func _update_turn_timers() -> void:
+	var lit_pos: int = _screen_pos(clock_seat) if clock_seat >= 0 else -1
+	for pos in range(SEAT_COUNT):
+		var box: Label = turn_timers[pos]
+		if box == null:
+			continue
+		if pos != lit_pos or clock_left <= 0.0:
+			box.text = ""
+			continue
+		var left: int = ceili(clock_left)
+		box.text = "%d s" % left
+		# Los últimos diez segundos en rojo: es cuando avisar sirve para algo.
+		box.add_theme_color_override("font_color", Color(1, 0.45, 0.4) if left <= 10 else Color(1, 0.85, 0.35))
 
 func _on_events(list: Array) -> void:
 	for e in list:

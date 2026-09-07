@@ -26,6 +26,20 @@ signal outbound(peer_id: int, msg: Dictionary)
 ## IA jugarían en el mismo instante y nadie vería qué pasó.
 const AI_TURN_DELAY := 0.6
 
+## Cuánto se espera por una PERSONA antes de jugarle su ficha.
+##
+## Es lo que evita que la mesa se quede quieta cuando alguien se levanta de la silla sin
+## cerrar el juego. No es el mismo caso que caerse: ahí el socket se corta y la sala se
+## entera en el acto; acá sigue conectado, así que para la sala esa persona está sentada
+## y su turno le pertenece — hasta que se acabe el tiempo.
+##
+## Al vencerse NO se pasa. En el dominó dominicano no se pasa por gusto: si tienes con
+## qué jugar, juegas. Así que se le juega la ficha que elegiría la IA, la misma que
+## cubre las sillas vacías.
+##
+## 45 segundos es de sobra para pensar una jugada y poco para aguantar mirando a nadie.
+const TURN_TIMEOUT := 45.0
+
 ## Una sala que se queda sin nadie se recoge pronto; una con gente adentro aguanta
 ## mucho más, porque "sin actividad" muchas veces es que están conversando.
 const EMPTY_ROOM_TTL := 300.0
@@ -56,6 +70,11 @@ var _host_seat: int = -1
 
 ## Turno de la IA (o pase forzado) pendiente de cumplirse cuando venza la pausa.
 var _pending: Dictionary = {}
+
+## Reloj del turno de una persona: por quién se espera, en qué mano y cuánto le queda.
+## Vive aparte de "_pending" porque son cosas distintas: ese es un relevo agendado, y
+## este es la espera por alguien que todavía tiene su turno.
+var _turn_clock: Dictionary = {}
 
 ## Segundos sin actividad, para la recolección de salas.
 var _idle: float = 0.0
@@ -276,6 +295,8 @@ func handle_continue(peer_id: int) -> bool:
 ## lo llaman con el salto que quieran.
 func tick(delta: float) -> void:
 	_idle += delta
+	_tick_turn_clock(delta)
+
 	if _pending.is_empty():
 		return
 
@@ -291,8 +312,36 @@ func tick(delta: float) -> void:
 	if int(job.hand_id) != _session.hand_id or _session.hand_over():
 		return
 
-	var seat: int = int(job.seat)
-	if bool(job.must_pass):
+	_play_for(int(job.seat), bool(job.must_pass))
+
+
+## Le descuenta el tiempo a quien tiene el turno y, si se le acaba, le juega la ficha.
+##
+## La comprobación de la mano es la misma que en los relevos agendados y por lo mismo:
+## entre que arrancó el reloj y ahora, la mano pudo cerrar y empezar otra, y jugarle a
+## la silla movería una mano que ya no es la que se estaba jugando.
+func _tick_turn_clock(delta: float) -> void:
+	if _turn_clock.is_empty():
+		return
+
+	_turn_clock["left"] = float(_turn_clock.left) - delta
+	if float(_turn_clock.left) > 0.0:
+		return
+
+	var job: Dictionary = _turn_clock
+	_turn_clock = {}
+	if int(job.hand_id) != _session.hand_id or _session.hand_over():
+		return
+
+	print("[sala %s] se le acabó el tiempo al puesto %d: le juega la sala" % [code, int(job.seat)])
+	_play_for(int(job.seat), false)
+
+
+## Juega por una silla. Es el MISMO relevo para los tres casos en que la sala mueve por
+## alguien —silla vacía, pase forzado y reloj vencido—, así que los tres se comportan
+## igual y no hay tres maneras distintas de jugarle a un puesto.
+func _play_for(seat: int, must_pass: bool) -> void:
+	if must_pass:
 		_session.force_pass(seat)
 		return
 
@@ -328,6 +377,14 @@ func host_seat() -> int:
 
 func has_pending_turn() -> bool:
 	return not _pending.is_empty()
+
+
+## Segundos que le quedan a quien tiene el turno, o 0 si no se está esperando por nadie
+## (silla vacía, pase forzado o mano cerrada: en esos casos mueve la sala).
+func seconds_left_for_turn() -> float:
+	if _turn_clock.is_empty():
+		return 0.0
+	return maxf(0.0, float(_turn_clock.left))
 
 
 ## Una sala vacía se recoge pronto; una con gente adentro aguanta una hora.
@@ -433,6 +490,9 @@ func _on_session_hand_started() -> void:
 
 
 func _on_session_hand_ended(closing: Dictionary, reveal: Dictionary) -> void:
+	# Con la mano cerrada no se espera por nadie: lo que sigue es que alguien pida
+	# seguir, y para eso alcanza con uno cualquiera, así que no hace falta reloj.
+	_turn_clock = {}
 	_broadcast({
 		"type": Protocol.S_HAND_ENDED,
 		"closing": Protocol.encode_event(closing),
@@ -443,21 +503,46 @@ func _on_session_hand_ended(closing: Dictionary, reveal: Dictionary) -> void:
 func _on_session_match_ended(winner_team: int) -> void:
 	phase = Phase.FINISHED
 	_pending = {}
+	_turn_clock = {}
 	_broadcast({"type": Protocol.S_MATCH_ENDED, "winner_team": winner_team})
 	broadcast_lobby()
 
 
-## Le toca a "seat". Si hay una persona sentada ahí y tiene con qué jugar, se espera su
-## mensaje. Si no (silla vacía o pase forzado), lo mueve la sala tras una pausa.
+## Le toca a "seat".
+##
+## Si hay una persona sentada ahí y tiene con qué jugar, se espera SU mensaje, pero con
+## un reloj corriendo: al vencerse le juega la sala (ver TURN_TIMEOUT). Si la silla está
+## vacía o toca pase forzado, lo mueve la sala tras una pausa corta.
+##
+## En los dos casos se le dice a la mesa cuánto se espera por ese puesto, y cuando no se
+## espera nada va en cero: así el cliente no tiene que adivinar si hay reloj o no.
 func _on_session_turn_ready(seat: int, must_pass: bool) -> void:
+	_turn_clock = {}
+
 	if _peer_at.has(seat) and not must_pass:
+		_turn_clock = {
+			"seat": seat,
+			"hand_id": _session.hand_id,
+			"left": TURN_TIMEOUT,
+		}
+		_announce_turn_clock(seat, TURN_TIMEOUT)
 		return
+
 	_pending = {
 		"seat": seat,
 		"must_pass": must_pass,
 		"hand_id": _session.hand_id,
 		"wait": AI_TURN_DELAY,
 	}
+	_announce_turn_clock(seat, 0.0)
+
+
+func _announce_turn_clock(seat: int, seconds: float) -> void:
+	_broadcast({
+		"type": Protocol.S_TURN_CLOCK,
+		"seat": seat,
+		"seconds": seconds,
+	})
 
 
 # ===========================================================================

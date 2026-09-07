@@ -58,6 +58,12 @@ const S_EVENTS := "events"
 const S_HAND_STARTED := "hand_started"
 const S_HAND_ENDED := "hand_ended"
 const S_MATCH_ENDED := "match_ended"
+
+## Cuánto se espera por el puesto que tiene el turno, en segundos, y cero cuando no se
+## espera nada porque va a mover la sala. Es política de la SALA y no una regla: la mesa
+## lo enseña para que se vea por quién se está esperando y cuánto le queda.
+const S_TURN_CLOCK := "turn_clock"
+
 const S_ROOM_CLOSED := "room_closed"
 const S_ERROR := "error"
 const S_PONG := "pong"

@@ -67,6 +67,12 @@ var _last_pub: Dictionary = {}
 var _last_mine: Dictionary = {}
 var _hand_live: bool = false
 
+## El reloj del turno se guarda como INSTANTE de vencimiento y no como los segundos que
+## trajo el mensaje. Si se guardaran los segundos, al reengancharse la mesa arrancaría la
+## cuenta otra vez desde 45 y enseñaría más tiempo del que queda de verdad.
+var _clock_seat: int = -1
+var _clock_deadline: float = 0.0
+
 ## Y lo mismo para la sala, porque el traspaso también va de vuelta: al terminar una
 ## partida se puede volver al lobby sin soltar el socket, y el lobby necesita saber en
 ## qué sala está y cómo está compuesta.
@@ -268,6 +274,8 @@ func _receive(raw: PackedByteArray) -> void:
 			_last_pub = Protocol.decode_public_view(msg.get("pub", {}))
 			_last_mine = Protocol.decode_private_view(msg.get("mine", {}))
 			_emit_snapshot(_last_pub, _last_mine)
+		Protocol.S_TURN_CLOCK:
+			_remember_clock(int(msg.get("seat", -1)), float(msg.get("seconds", 0.0)))
 		Protocol.S_EVENTS:
 			_emit_events(Protocol.decode_events(msg.get("list", [])))
 		Protocol.S_HAND_STARTED:
@@ -275,6 +283,7 @@ func _receive(raw: PackedByteArray) -> void:
 			_emit_hand_started()
 		Protocol.S_HAND_ENDED:
 			_hand_live = false
+			_remember_clock(-1, 0.0)
 			_emit_hand_ended(
 				Protocol.decode_event(msg.get("closing", {})),
 				Protocol.decode_reveal(msg.get("reveal", {}))
@@ -356,6 +365,22 @@ func _forget_room() -> void:
 
 ## Repite lo último que se supo, en el mismo orden en que bajó la primera vez, para que
 ## la pantalla que reengancha no tenga que distinguir esto de una partida que empieza.
+## Guarda el reloj y lo pasa a la pantalla. Se guarda el instante de vencimiento para
+## poder repetirlo con lo que queda de verdad si la mesa se engancha más tarde.
+func _remember_clock(seat: int, seconds: float) -> void:
+	_clock_seat = seat if seconds > 0.0 else -1
+	_clock_deadline = _now() + seconds
+	_emit_turn_clock(seat, seconds)
+
+
+func _clock_left() -> float:
+	return maxf(0.0, _clock_deadline - _now())
+
+
+func _now() -> float:
+	return float(Time.get_ticks_msec()) / 1000.0
+
+
 func _replay() -> void:
 	if not _room_code.is_empty():
 		room_joined.emit(_room_code, _seat, _is_host)
@@ -368,6 +393,8 @@ func _replay() -> void:
 		_emit_snapshot(_last_pub, _last_mine)
 	if _hand_live:
 		_emit_hand_started()
+	if _clock_seat >= 0:
+		_emit_turn_clock(_clock_seat, _clock_left())
 
 
 ## La dirección horneada al compilar, o cadena vacía si este ejecutable no trae ninguna.

@@ -52,6 +52,14 @@ signal server_error(reason: String)
 ## la necesita para no etiquetar de "IA" al amigo que tiene enfrente.
 signal seats_changed(names: Array)
 
+## Cuánto se espera por el puesto que tiene el turno, en segundos; cero cuando no se
+## espera nada porque va a mover la autoridad. La cuenta la lleva la pantalla desde este
+## aviso: quien manda es la autoridad, esto es solo para que se VEA por quién se espera.
+##
+## En local no llega nunca —hay una sola persona y nadie a quien hacer esperar—, así que
+## la pantalla tiene que funcionar igual sin recibirlo.
+signal turn_clock(seat: int, seconds: float)
+
 ## Se perdió la conexión con la autoridad. En local no puede pasar; en red sí, y hay que
 ## decirlo, porque si no la mesa se queda quieta y parece que el juego se colgó.
 signal disconnected()
@@ -140,3 +148,7 @@ func _emit_disconnected() -> void:
 
 func _emit_seats_changed(names: Array) -> void:
 	seats_changed.emit(names)
+
+
+func _emit_turn_clock(seat: int, seconds: float) -> void:
+	turn_clock.emit(seat, seconds)

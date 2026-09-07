@@ -42,6 +42,8 @@ func run() -> void:
 	_test_full_hand()
 	_test_ai_seats()
 	_test_disconnect_on_turn()
+	_test_turn_clock()
+	_test_no_clock_for_empty_seat()
 	_test_host_organizes()
 	_test_play_again()
 	_test_close_room()
@@ -440,6 +442,61 @@ func _test_disconnect_on_turn() -> void:
 	_check(not _hand_ended_peers.has(dropped), "a quien se fue no debería llegarle el cierre")
 
 
+## El reloj de turno: la sala espera por una persona, pero no para siempre.
+##
+## Es el otro lado de la moneda de caerse en tu turno, y el arreglo de eso no sirve acá:
+## quien se levanta de la silla sin cerrar el juego sigue conectado, así que para la sala
+## está sentado y su turno es suyo. Sin reloj, la mesa se queda quieta hasta que la sala
+## venza, una hora después.
+func _test_turn_clock() -> void:
+	var room := _new_room()
+	for i in range(4):
+		room.add_member(800 + i, "J%d" % i)
+	room.start_match(800, {"target_score": 100})
+
+	var seat: int = int(_last_pub.current_player)
+	var waiting: int = 800 + seat
+	var board_before: int = int(_last_pub.board.size())
+
+	_check(room.seconds_left_for_turn() == Room.TURN_TIMEOUT, "el turno debería arrancar con el reloj completo")
+	_check(not room.has_pending_turn(), "con una persona en turno no se agenda relevo: se espera su mensaje")
+	_check(_clock_seconds_for(waiting) == Room.TURN_TIMEOUT, "a la mesa debería llegarle el reloj del turno")
+
+	# Se espera un rato sin que juegue: el reloj baja y la mesa NO se mueve. Esto es lo
+	# que separa un reloj de un relevo inmediato — la persona tiene su tiempo.
+	room.tick(10.0)
+	_check(is_equal_approx(room.seconds_left_for_turn(), Room.TURN_TIMEOUT - 10.0), "el reloj debería estar en %.1f y está en %.1f" % [Room.TURN_TIMEOUT - 10.0, room.seconds_left_for_turn()])
+	_check(int(_last_pub.board.size()) == board_before, "antes de que venza el reloj nadie debería jugar por esa persona")
+
+	# Y al vencerse, la sala le juega. No se le pasa: en dominicano no se pasa por gusto.
+	room.tick(Room.TURN_TIMEOUT)
+	_check(int(_last_pub.board.size()) > board_before, "al vencer el reloj la sala debería jugarle la ficha")
+	_check(int(_last_pub.current_player) != seat, "el turno debería haber pasado a otro puesto")
+	_check(room.seat_of(waiting) == seat, "vencer el reloj no debería sacar a nadie de su silla")
+	_check(room.seconds_left_for_turn() == Room.TURN_TIMEOUT, "el turno siguiente debería arrancar con su propio reloj completo")
+
+
+## Una silla vacía no tiene reloj: la mueve la sala tras la pausa corta, como siempre.
+## Ponerle reloj sería esperar por nadie.
+func _test_no_clock_for_empty_seat() -> void:
+	var room := _new_room()
+	room.add_member(820, "Ana")
+	room.add_member(821, "Beto")
+	room.start_match(820, {"target_score": 100})
+
+	var guard := 0
+	while int(_last_pub.current_player) < 2:
+		guard += 1
+		if guard > 200:
+			_fail("no le llegó el turno a ninguna silla vacía")
+			return
+		if not _try_client_play(room, [820, 821]):
+			room.tick(1.0)
+
+	_check(room.seconds_left_for_turn() == 0.0, "una silla vacía no debería tener reloj")
+	_check(room.has_pending_turn(), "una silla vacía debería tener el relevo agendado")
+	_check(_clock_seconds_for(820) == 0.0, "el reloj de una silla vacía debería viajar en cero")
+
 # ===========================================================================
 # Registro de salas
 # ===========================================================================
@@ -565,6 +622,19 @@ func _last_error_for(peer_id: int) -> String:
 		if str(msg.get("type", "")) == Protocol.S_ERROR:
 			return str(msg.get("reason", ""))
 	return ""
+
+
+## Los segundos del último reloj de turno que le llegó a alguien, o -1 si no le llegó
+## ninguno. Se lee de lo que salió por el cable, no de la sala.
+func _clock_seconds_for(peer_id: int) -> float:
+	for i in range(_sent.size() - 1, -1, -1):
+		var entry: Dictionary = _sent[i]
+		if int(entry.peer) != peer_id:
+			continue
+		var msg: Dictionary = entry.msg
+		if str(msg.get("type", "")) == Protocol.S_TURN_CLOCK:
+			return float(msg.get("seconds", -1.0))
+	return -1.0
 
 
 func _messages_for(peer_id: int) -> Array:
