@@ -172,7 +172,7 @@ func _build_entry() -> void:
 	if not WsClientTransport.baked_url().is_empty():
 		url_field.get_parent().visible = false
 
-	var create_btn := Ui.primary_button("Crear una sala nueva", Ui.PLAY)
+	var create_btn := Ui.primary_button("Crear una sala nueva", Ui.CREATE)
 	create_btn.custom_minimum_size = Vector2(300, 48)
 	create_btn.pressed.connect(_on_create_pressed)
 	vb.add_child(_centered(create_btn))
@@ -184,7 +184,7 @@ func _build_entry() -> void:
 	code_field.placeholder_text = "%d letras" % RoomCode.LENGTH
 	code_field.max_length = 12
 
-	var join_btn := Ui.primary_button("Entrar con el código", Ui.PLAY)
+	var join_btn := Ui.primary_button("Entrar con el código", Ui.ENTER)
 	join_btn.custom_minimum_size = Vector2(300, 48)
 	join_btn.pressed.connect(_on_join_pressed)
 	vb.add_child(_centered(join_btn))
@@ -199,7 +199,7 @@ func _build_entry() -> void:
 
 	_load_settings()
 
-	var back_btn := Ui.secondary_button("Volver a jugar contra la máquina", Ui.PLAY)
+	var back_btn := Ui.secondary_button("Volver a jugar contra la máquina", Ui.BOT)
 	back_btn.custom_minimum_size = Vector2(300, 44)
 	back_btn.pressed.connect(_on_back_pressed)
 	vb.add_child(_centered(back_btn))
@@ -221,23 +221,18 @@ func _build_room() -> void:
 	vb.add_child(_title("Sala"))
 
 	# El código va grande porque su único propósito es que alguien lo lea y lo pase.
-	code_label = Label.new()
-	code_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	code_label.add_theme_font_size_override("font_size", 42)
-	code_label.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
+	# El código va grande y en el dorado del cartel: es lo único de esta pantalla que hay
+	# que leer en voz alta o copiar, así que es lo que más se ve.
+	code_label = Ui.title("", 44)
+	code_label.add_theme_color_override("font_color", Ui.GOLD)
 	vb.add_child(code_label)
 
-	var hint := Label.new()
-	hint.text = "Pásales este código a tus amigos para que entren"
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_font_size_override("font_size", 13)
-	vb.add_child(hint)
+	vb.add_child(Ui.muted("Pásales este código a tus amigos para que entren"))
+	vb.add_child(Ui.rule(520.0))
 
-	seats_hint = Label.new()
-	seats_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	seats_hint.autowrap_mode = TextServer.AUTOWRAP_WORD
-	seats_hint.custom_minimum_size = Vector2(520, 0)
-	seats_hint.add_theme_font_size_override("font_size", 13)
+	vb.add_child(Ui.section("Los puestos de la mesa:", Ui.PEOPLE, Ui.ACCENT))
+
+	seats_hint = Ui.muted("", 520.0)
 	vb.add_child(seats_hint)
 
 	# Las cuatro sillas, ordenadas por lado para que los compañeros queden juntos a la
@@ -262,12 +257,8 @@ func _build_room() -> void:
 	host_box.add_theme_constant_override("separation", 6)
 	vb.add_child(host_box)
 
-	var config_title := Label.new()
-	config_title.text = "Ajustes de la partida"
-	config_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	config_title.add_theme_font_size_override("font_size", 15)
-	config_title.add_theme_color_override("font_color", Color(1, 0.9, 0.4))
-	host_box.add_child(config_title)
+	host_box.add_child(Ui.rule(520.0))
+	host_box.add_child(Ui.section("Ajustes de la partida:", Ui.GEAR, Ui.ACCENT))
 
 	var defaults: Dictionary = Transport.default_config()
 	spin_target = _spin(host_box, "Meta de puntos", int(defaults.target_score), 50, 1000)
@@ -287,7 +278,7 @@ func _build_room() -> void:
 	room_status.add_theme_color_override("font_color", Color(1, 0.85, 0.5))
 	vb.add_child(room_status)
 
-	var leave_btn := Ui.secondary_button("Salir de la sala", Ui.PEOPLE)
+	var leave_btn := Ui.secondary_button("Salir de la sala", Ui.EXIT)
 	leave_btn.custom_minimum_size = Vector2(300, 44)
 	leave_btn.pressed.connect(_on_leave_pressed)
 	vb.add_child(_centered(leave_btn))
@@ -640,14 +631,16 @@ func _field(parent: VBoxContainer, label_text: String, initial: String) -> LineE
 	return field
 
 
+## Un ajuste de la partida: el nombre a la izquierda y el número a la derecha, igual que
+## en el menú de arranque de la mesa. Misma forma, mismo tamaño, mismo sitio.
 func _spin(parent: VBoxContainer, label_text: String, initial: int, low: int, high: int) -> SpinBox:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	parent.add_child(row)
 
-	var lbl := Label.new()
-	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(220, 0)
+	var lbl := Ui.body(label_text)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
 
 	var spin := SpinBox.new()
@@ -655,8 +648,7 @@ func _spin(parent: VBoxContainer, label_text: String, initial: int, low: int, hi
 	spin.max_value = high
 	spin.step = 5
 	spin.value = initial
-	spin.custom_minimum_size = Vector2(120, 30)
-	row.add_child(spin)
+	row.add_child(Ui.style_spin(spin))
 	return spin
 
 

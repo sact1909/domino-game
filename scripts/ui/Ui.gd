@@ -146,17 +146,74 @@ static func _label(text: String, size: int, color: Color, align: int) -> Label:
 # ---------------------------------------------------------------------------
 # Iconos
 # ---------------------------------------------------------------------------
-## Los iconos van DIBUJADOS, no como imágenes ni como texto.
+## Los iconos son los SVG de Lucide, en assets/icons.
 ##
-## No es capricho: la fuente por defecto de Godot no trae ninguno de estos glifos (lo
-## comprobé uno por uno: ni ✓, ni ★, ni ⚙, ni ℹ), así que como texto saldrían cuadritos.
-## Y como imágenes habría que añadir archivos, revisar su licencia y decidir tamaños.
-## Dibujados no pesan nada, se ven nítidos a cualquier escala y toman el color que se les
-## pida, que es justo lo que hace falta acá: el mismo icono en verde o en dorado.
-enum { GEAR, STAR, INFO, CHECK, PLAY, PEOPLE }
+## Godot importa SVG y los rasteriza al importar, así que se ven nítidos y no cuesta
+## código: el archivo se carga como cualquier textura. Están al doble de tamaño (48 px
+## para usarlos a 20) para que aguanten si alguno crece.
+##
+## Se les pasa el color con "modulate", que MULTIPLICA. Por eso los seis archivos llevan
+## el trazo en blanco: Lucide los publica con stroke="currentColor", que sin hoja de
+## estilos se rasteriza en NEGRO, y negro multiplicado por cualquier color sigue siendo
+## negro — los iconos no se veían. Si copias uno nuevo desde assets/icons/_lucide, hay
+## que cambiarle ese currentColor por #ffffff o saldrá invisible.
+## Cada icono dice lo que hace su botón. No es adorno: tres botones seguidos con el
+## mismo icono es peor que ninguno, porque el ojo deja de mirarlos.
+enum { GEAR, STAR, INFO, CHECK, PLAY, PEOPLE, CREATE, ENTER, EXIT, BOT, NEXT, REPLAY }
+
+const ICON_DIR := "res://assets/icons/"
+const ICON_FILES := {
+	GEAR: "settings",
+	STAR: "star",
+	INFO: "info",
+	CHECK: "check",
+	PLAY: "play",
+	PEOPLE: "users",
+	CREATE: "circle-plus",
+	ENTER: "log-in",
+	EXIT: "log-out",
+	BOT: "bot",
+	NEXT: "arrow-right",
+	REPLAY: "rotate-ccw",
+}
 
 
 static func icon(kind: int, color: Color, size: float = 20.0) -> Control:
+	var tex: Texture2D = _icon_texture(kind)
+	if tex == null:
+		# Si falta el archivo se usa el dibujo de respaldo. Un icono es adorno: que falte
+		# no debería dejar un hueco ni tirar la pantalla.
+		return _drawn_icon(kind, color, size)
+
+	var rect := TextureRect.new()
+	rect.texture = tex
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	rect.modulate = color
+	rect.custom_minimum_size = Vector2(size, size)
+	rect.size = Vector2(size, size)
+	rect.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	rect.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return rect
+
+
+static func _icon_texture(kind: int) -> Texture2D:
+	if not ICON_FILES.has(kind):
+		return null
+	var path: String = "%s%s.svg" % [ICON_DIR, str(ICON_FILES[kind])]
+	if not ResourceLoader.exists(path):
+		return null
+	return load(path) as Texture2D
+
+
+## El respaldo dibujado a mano. Se queda por lo dicho arriba —que falte un archivo no debe
+## dejar un hueco— y porque son formas simples que no cuestan nada.
+##
+## Solo cubre los seis primeros. Los demás caen en el "match" sin rama y devuelven un
+## hueco del tamaño del icono, que es exactamente lo que debe pasar: si falta el archivo,
+## el botón se ve sin icono pero con su texto y su sitio intactos.
+static func _drawn_icon(kind: int, color: Color, size: float) -> Control:
 	var node := IconDraw.new()
 	node.kind = kind
 	node.tint = color
@@ -281,8 +338,11 @@ static func style_choice(btn: Button, chosen: bool) -> void:
 	btn.add_theme_color_override("font_pressed_color", TEXT)
 	btn.add_theme_color_override("font_hover_color", TEXT)
 
+	# Se saca del árbol en el acto y no solo con queue_free: eso último borra al final
+	# del cuadro, así que dos repintados seguidos dejarían dos vistos encima.
 	for child in btn.get_children():
 		if child is Control and child.name == "visto":
+			btn.remove_child(child)
 			child.queue_free()
 	if not chosen:
 		return

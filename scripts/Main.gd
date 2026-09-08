@@ -899,7 +899,7 @@ func _build_hand_result_overlay() -> void:
 	hand_result_content.add_theme_constant_override("separation", 10)
 	vb.add_child(hand_result_content)
 
-	var continue_btn := Ui.primary_button("Continuar", Ui.PLAY)
+	var continue_btn := Ui.primary_button("Continuar", Ui.NEXT)
 	continue_btn.custom_minimum_size = Vector2(240, 48)
 	continue_btn.pressed.connect(_on_hand_result_continue)
 	var btn_center := CenterContainer.new()
@@ -939,12 +939,12 @@ func _build_game_over_overlay() -> void:
 	row.add_theme_constant_override("separation", 16)
 	vb.add_child(row)
 
-	again_button = Ui.primary_button("Jugar de nuevo", Ui.PLAY)
+	again_button = Ui.primary_button("Jugar de nuevo", Ui.REPLAY)
 	again_button.custom_minimum_size = Vector2(240, 48)
 	again_button.pressed.connect(_on_play_again_pressed)
 	row.add_child(again_button)
 
-	leave_button = Ui.secondary_button("", Ui.PEOPLE)
+	leave_button = Ui.secondary_button("", Ui.EXIT)
 	leave_button.custom_minimum_size = Vector2(240, 48)
 	leave_button.visible = false
 	leave_button.pressed.connect(_on_leave_pressed)
@@ -1074,10 +1074,18 @@ func _make_tile_back(w: int, h: int) -> Control:
 # ===========================================================================
 # Pantalla de inicio / fin de partida
 # ===========================================================================
+## Cambió la meta elegida. Hay que REPINTAR los tres botones, no solo marcar el estado.
+##
+## Antes alcanzaba con button_pressed porque el tema por defecto dibujaba distinto un
+## botón pulsado. Ahora los cinco estados de un botón se ven igual a propósito —para que
+## no cambie de color al pasarle el ratón por encima— así que el estado por sí solo no se
+## ve: lo que distingue a la elegida es el relleno verde y el visto, y eso se pone acá.
 func _on_goal_selected(goal: int) -> void:
 	selected_target = goal
 	for b in target_option_buttons:
-		b.button_pressed = (int(b.text) == goal)
+		var chosen: bool = int(b.text) == goal
+		b.button_pressed = chosen
+		Ui.style_choice(b, chosen)
 
 
 func _on_start_pressed() -> void:
